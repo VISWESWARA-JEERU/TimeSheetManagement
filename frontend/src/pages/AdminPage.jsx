@@ -48,7 +48,7 @@ function AdminPage() {
         <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="mb-5 flex items-center gap-3">
             <ShieldCheck className="text-indigo-600" size={22} />
-            <div><h2 className="font-bold text-slate-900">Users</h2><p className="text-sm text-slate-500">Live users from the organization.</p></div>
+            <div><h2 className="font-bold text-slate-600">Users-</h2><p className="text-sm text-slate-500">Live users from the organization.</p></div>
           </div>
           {users.length === 0 ? <EmptyState title="No users found" /> : <div className="divide-y divide-slate-100">{users.map((user) => <div key={user.id} className="flex items-center justify-between py-3"><div><p className="font-semibold text-slate-800">{user.full_name}</p><p className="text-sm text-slate-500">{user.email}</p></div><span className="text-xs font-semibold uppercase text-slate-500">{user.roles.join(", ")}</span></div>)}</div>}
         </section>
