@@ -157,9 +157,9 @@ async def main() -> None:
                 session, org, email="member@example.com", full_name="Milo Member", roles=[Role.member]
             )
             await _ensure_team(session, org, "Engineering", manager_email="manager@example.com",
-                               member_emails=["member@example.com", "manager@example.com"])
+                               member_emails=["member@example.com"])
             await _ensure_team(session, org, "Operations", manager_email="admin@example.com",
-                               member_emails=["admin@example.com"])
+                               member_emails=[])
         await session.commit()
     print("[seed] done")
 

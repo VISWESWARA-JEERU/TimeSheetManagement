@@ -3,7 +3,7 @@ import uuid
 
 from app.core.exceptions import ValidationError
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable #new line added
 
 from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
