@@ -8,6 +8,9 @@ import {
 // Layout
 import AppLayout from "./layouts/AppLayout";
 
+// Route protection
+import RoleGuard from "./components/common/RoleGuard";
+
 // Pages
 import LoginPage from "./pages/LoginPage";
 import TodayPage from "./pages/TodayPage";
@@ -33,15 +36,17 @@ function App() {
         />
 
         {/* =====================================
-            PROTECTED APPLICATION ROUTES
+            AUTHENTICATED ROUTES
 
-            AppLayout checks authentication.
-            All child pages render through
-            <Outlet /> inside AppLayout.
+            AppLayout checks whether the user
+            is logged in.
+
+            RoleGuard handles role-based
+            page access.
         ====================================== */}
 
         <Route element={<AppLayout />}>
-          {/* Default application route */}
+          {/* Default route */}
 
           <Route
             index
@@ -53,7 +58,9 @@ function App() {
             }
           />
 
-          {/* Member routes */}
+          {/* =================================
+              ALL AUTHENTICATED USERS
+          ================================== */}
 
           <Route
             path="/today"
@@ -75,23 +82,51 @@ function App() {
             element={<ReportsPage />}
           />
 
-          {/* Manager routes */}
+          {/* =================================
+              MANAGER + ADMIN
+          ================================== */}
 
           <Route
             path="/team"
-            element={<TeamPage />}
+            element={
+              <RoleGuard
+                allowedRoles={[
+                  "manager",
+                  "admin",
+                ]}
+              >
+                <TeamPage />
+              </RoleGuard>
+            }
           />
 
           <Route
             path="/approvals"
-            element={<ApprovalsPage />}
+            element={
+              <RoleGuard
+                allowedRoles={[
+                  "manager",
+                  "admin",
+                ]}
+              >
+                <ApprovalsPage />
+              </RoleGuard>
+            }
           />
 
-          {/* Admin route */}
+          {/* =================================
+              ADMIN ONLY
+          ================================== */}
 
           <Route
             path="/admin"
-            element={<AdminPage />}
+            element={
+              <RoleGuard
+                allowedRoles={["admin"]}
+              >
+                <AdminPage />
+              </RoleGuard>
+            }
           />
         </Route>
 
