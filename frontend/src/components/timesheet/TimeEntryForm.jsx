@@ -1,94 +1,219 @@
-import { useState } from "react";
+import {
+  useEffect,
+  useState,
+} from "react";
 
 import {
+  AlertCircle,
   Link2,
   Plus,
+  RefreshCw,
+  Save,
   X,
 } from "lucide-react";
 
+import { projectService } from "../../services/projectService";
+import { taskService } from "../../services/taskService";
+import { timeEntryService } from "../../services/timeEntryService";
+
+
 function TimeEntryForm({
   onClose,
-  onSave,
+  onSaved,
+  initialDate = null,
+  entry = null,
 }) {
-  const projects = [
-    {
-      id: 1,
-      name: "Apollo",
-      source: "GitHub",
-    },
-    {
-      id: 2,
-      name: "Timesheet App",
-      source: "GitHub",
-    },
-    {
-      id: 3,
-      name: "Internal",
-      source: "Manual",
-    },
-  ];
+  const isEditing = Boolean(entry);
 
-  const tasks = [
-    {
-      id: 1,
-      projectId: 1,
-      title: "#142 Fix auth redirect",
-    },
-    {
-      id: 2,
-      projectId: 1,
-      title: "#150 Review PR",
-    },
-    {
-      id: 3,
-      projectId: 2,
-      title: "#25 Build Today page",
-    },
-  ];
+  const [projects, setProjects] =
+    useState([]);
 
-  const [projectId, setProjectId] =
-    useState("");
+  const [tasks, setTasks] =
+    useState([]);
 
-  const [taskId, setTaskId] =
-    useState("");
-
-  const [manualTask, setManualTask] =
-    useState("");
-
-  const [description, setDescription] =
-    useState("");
-
-  const [duration, setDuration] =
-    useState(60);
-
-  const [billable, setBillable] =
+  const [loadingProjects, setLoadingProjects] =
     useState(true);
 
-  const [updateGithub, setUpdateGithub] =
-    useState(true);
+  const [loadingTasks, setLoadingTasks] =
+    useState(false);
+
+  const [saving, setSaving] =
+    useState(false);
+
+  const [error, setError] =
+    useState("");
+
+
+  // =====================================================
+  // FORM STATE
+  // =====================================================
+
+  const [form, setForm] =
+    useState(() =>
+      createInitialForm(
+        entry,
+        initialDate
+      )
+    );
 
   const [codeLinks, setCodeLinks] =
-    useState([""]);
+    useState(() =>
+      createInitialCodeLinks(entry)
+    );
 
-  const filteredTasks = tasks.filter(
-    (task) =>
-      task.projectId === Number(projectId)
-  );
 
-  function changeProject(event) {
-    setProjectId(event.target.value);
-    setTaskId("");
+  // =====================================================
+  // LOAD PROJECTS
+  // =====================================================
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadProjects() {
+      setLoadingProjects(true);
+
+      try {
+        const data =
+          await projectService.getAll({
+            activeOnly: false,
+          });
+
+        if (!cancelled) {
+          setProjects(
+            Array.isArray(data)
+              ? data
+              : []
+          );
+        }
+      } catch (requestError) {
+        console.error(
+          "Failed to load projects:",
+          requestError
+        );
+
+        if (!cancelled) {
+          setError(
+            requestError.message ||
+              "Unable to load projects."
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingProjects(false);
+        }
+      }
+    }
+
+    loadProjects();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+
+  // =====================================================
+  // LOAD TASKS FOR SELECTED PROJECT
+  // =====================================================
+
+  useEffect(() => {
+    if (!form.project_id) {
+      setTasks([]);
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadTasks() {
+      setLoadingTasks(true);
+
+      try {
+        const data =
+          await taskService.getAll({
+            projectId:
+              form.project_id,
+
+            activeOnly: true,
+          });
+
+        if (!cancelled) {
+          setTasks(
+            Array.isArray(data)
+              ? data
+              : []
+          );
+        }
+      } catch (requestError) {
+        console.error(
+          "Failed to load tasks:",
+          requestError
+        );
+
+        if (!cancelled) {
+          setTasks([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingTasks(false);
+        }
+      }
+    }
+
+    loadTasks();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [form.project_id]);
+
+
+  // =====================================================
+  // INPUT CHANGE
+  // =====================================================
+
+  function handleChange(event) {
+    const {
+      name,
+      value,
+      type,
+      checked,
+    } = event.target;
+
+    setForm((previous) => ({
+      ...previous,
+
+      [name]:
+        type === "checkbox"
+          ? checked
+          : value,
+
+      ...(name === "project_id"
+        ? {
+            task_id: "",
+          }
+        : {}),
+    }));
   }
 
-  function changeLink(index, value) {
+
+  // =====================================================
+  // CODE LINKS
+  // =====================================================
+
+  function changeLink(
+    index,
+    value
+  ) {
     setCodeLinks((current) =>
-      current.map((link, currentIndex) =>
-        currentIndex === index
-          ? value
-          : link
+      current.map(
+        (link, currentIndex) =>
+          currentIndex === index
+            ? value
+            : link
       )
     );
   }
+
 
   function addLink() {
     setCodeLinks((current) => [
@@ -97,185 +222,632 @@ function TimeEntryForm({
     ]);
   }
 
+
   function removeLink(index) {
-    setCodeLinks((current) =>
-      current.filter(
-        (_, currentIndex) =>
-          currentIndex !== index
-      )
-    );
+    setCodeLinks((current) => {
+      const updated =
+        current.filter(
+          (_, currentIndex) =>
+            currentIndex !== index
+        );
+
+      return updated.length > 0
+        ? updated
+        : [""];
+    });
   }
 
-  function handleSubmit(event) {
+
+  // =====================================================
+  // SUBMIT
+  // =====================================================
+
+  async function handleSubmit(event) {
     event.preventDefault();
 
-    const data = {
-      projectId,
-      taskId:
-        taskId === "manual"
-          ? null
-          : taskId,
-      manualTask:
-        taskId === "manual"
-          ? manualTask
-          : null,
-      description,
-      durationMinutes: duration,
-      billable,
-      updateGithub,
-      codeLinks:
-        codeLinks.filter(Boolean),
-    };
+    setError("");
 
-    console.log(data);
+    // ---------------------------------------------------
+    // Date validation
+    // ---------------------------------------------------
 
-    onSave?.(data);
-    onClose();
+    if (!form.work_date) {
+      setError(
+        "Please select a work date."
+      );
+
+      return;
+    }
+
+    if (
+      isFutureDate(
+        form.work_date
+      )
+    ) {
+      setError(
+        "You cannot add a time entry for a future date."
+      );
+
+      return;
+    }
+
+
+    // ---------------------------------------------------
+    // Project validation
+    // ---------------------------------------------------
+
+    if (!form.project_id) {
+      setError(
+        "Please select a project."
+      );
+
+      return;
+    }
+
+
+    // ---------------------------------------------------
+    // Duration validation
+    // ---------------------------------------------------
+
+    const hours =
+      Number(
+        form.duration_hours || 0
+      );
+
+    const minutes =
+      Number(
+        form.duration_minutes || 0
+      );
+
+    if (
+      hours < 0 ||
+      minutes < 0 ||
+      minutes > 59
+    ) {
+      setError(
+        "Please enter a valid duration."
+      );
+
+      return;
+    }
+
+    const durationMinutes =
+      hours * 60 + minutes;
+
+    if (
+      durationMinutes < 1 ||
+      durationMinutes > 1440
+    ) {
+      setError(
+        "Duration must be between 1 minute and 24 hours."
+      );
+
+      return;
+    }
+
+
+    // ---------------------------------------------------
+    // Code links
+    // ---------------------------------------------------
+
+    const cleanLinks =
+      codeLinks
+        .map((link) =>
+          link.trim()
+        )
+        .filter(Boolean);
+
+    for (const link of cleanLinks) {
+      if (!isValidUrl(link)) {
+        setError(
+          "Please enter a valid code link URL."
+        );
+
+        return;
+      }
+    }
+
+
+    // ---------------------------------------------------
+    // Save
+    // ---------------------------------------------------
+
+    setSaving(true);
+
+    try {
+      const commonPayload = {
+        work_date:
+          form.work_date,
+
+        project_id:
+          form.project_id,
+
+        task_id:
+          form.task_id || null,
+
+        description:
+          form.description.trim(),
+
+        duration_minutes:
+          durationMinutes,
+
+        billable:
+          form.billable,
+
+        code_links:
+          cleanLinks.map(
+            (url) => ({
+              url,
+              link_type: "other",
+              repo: null,
+              ref: null,
+              number: null,
+              note: null,
+            })
+          ),
+      };
+
+
+      let savedEntry;
+
+
+      // -------------------------------------------------
+      // EDIT
+      // -------------------------------------------------
+
+      if (isEditing) {
+        savedEntry =
+          await timeEntryService.update(
+            entry.id,
+            {
+              version:
+                entry.version,
+
+              ...commonPayload,
+            }
+          );
+      }
+
+
+      // -------------------------------------------------
+      // CREATE
+      // -------------------------------------------------
+
+      else {
+        savedEntry =
+          await timeEntryService.create({
+            ...commonPayload,
+
+            client_idempotency_key:
+              createIdempotencyKey(),
+          });
+      }
+
+
+      /*
+       * Parent can reload the Today page
+       * or Timesheet page after save.
+       */
+      await onSaved?.(
+        savedEntry
+      );
+
+      onClose?.();
+
+    } catch (requestError) {
+      console.error(
+        "Failed to save time entry:",
+        requestError
+      );
+
+      setError(
+        requestError.message ||
+          "Unable to save time entry."
+      );
+
+    } finally {
+      setSaving(false);
+    }
   }
+
+
+  // =====================================================
+  // UI
+  // =====================================================
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/40">
+
       <div className="absolute inset-y-0 right-0 w-full max-w-xl overflow-y-auto bg-white shadow-2xl">
+
+
+        {/* ==========================================
+            HEADER
+        ========================================== */}
+
         <div className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-200 bg-white px-6 py-5">
+
           <div>
+
             <h2 className="text-lg font-bold text-slate-900">
-              Add Time Entry
+
+              {isEditing
+                ? "Edit Time Entry"
+                : "Add Time Entry"}
+
             </h2>
 
-            <p className="text-sm text-slate-500">
-              Log the work you completed.
+            <p className="mt-1 text-sm text-slate-500">
+
+              {isEditing
+                ? "Update your logged work."
+                : "Log the work you completed."}
+
             </p>
+
           </div>
 
+
           <button
+            type="button"
             onClick={onClose}
-            className="rounded-lg p-2 text-slate-400 hover:bg-slate-100"
+            disabled={saving}
+            className="rounded-lg p-2 text-slate-400 transition hover:bg-slate-100 disabled:opacity-50"
           >
             <X size={20} />
           </button>
+
         </div>
+
+
+        {/* ==========================================
+            FORM
+        ========================================== */}
 
         <form
           onSubmit={handleSubmit}
           className="space-y-6 p-6"
         >
+
+
+          {/* ERROR */}
+
+          {error && (
+
+            <div className="flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 p-3">
+
+              <AlertCircle
+                size={18}
+                className="mt-0.5 shrink-0 text-red-600"
+              />
+
+              <p className="text-sm text-red-700">
+                {error}
+              </p>
+
+            </div>
+
+          )}
+
+
+          {/* ========================================
+              WORK DATE
+          ======================================== */}
+
           <div>
+
+            <label className="mb-2 block text-sm font-semibold text-slate-700">
+              Work date *
+            </label>
+
+            <input
+              type="date"
+              name="work_date"
+              value={form.work_date}
+              max={getTodayDateString()}
+              onChange={handleChange}
+              required
+              className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+            />
+
+            <p className="mt-1.5 text-xs text-slate-400">
+              Future dates are not allowed.
+            </p>
+
+          </div>
+
+
+          {/* ========================================
+              PROJECT
+          ======================================== */}
+
+          <div>
+
             <label className="mb-2 block text-sm font-semibold text-slate-700">
               Project *
             </label>
 
             <select
               required
-              value={projectId}
-              onChange={changeProject}
-              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+              name="project_id"
+              value={form.project_id}
+              onChange={handleChange}
+              disabled={
+                loadingProjects
+              }
+              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 disabled:bg-slate-100"
             >
+
               <option value="">
-                Select project
+
+                {loadingProjects
+                  ? "Loading projects..."
+                  : "Select project"}
+
               </option>
 
-              {projects.map((project) => (
-                <option
-                  key={project.id}
-                  value={project.id}
-                >
-                  {project.name} · {project.source}
-                </option>
-              ))}
+
+              {projects.map(
+                (project) => (
+
+                  <option
+                    key={project.id}
+                    value={project.id}
+                  >
+
+                    {project.name}
+
+                    {project.code
+                      ? ` (${project.code})`
+                      : ""}
+
+                  </option>
+
+                )
+              )}
+
             </select>
+
           </div>
 
+
+          {/* ========================================
+              TASK
+          ======================================== */}
+
           <div>
+
             <label className="mb-2 block text-sm font-semibold text-slate-700">
+
               Task
+
+              <span className="ml-1 font-normal text-slate-400">
+                Optional
+              </span>
+
             </label>
 
+
             <select
-              value={taskId}
-              disabled={!projectId}
-              onChange={(event) =>
-                setTaskId(event.target.value)
+              name="task_id"
+              value={form.task_id}
+              onChange={handleChange}
+              disabled={
+                !form.project_id ||
+                loadingTasks
               }
-              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm disabled:bg-slate-100"
+              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 disabled:bg-slate-100"
             >
+
               <option value="">
-                Select task
+
+                {!form.project_id
+                  ? "Select a project first"
+                  : loadingTasks
+                    ? "Loading tasks..."
+                    : "No task selected"}
+
               </option>
 
-              {filteredTasks.map((task) => (
-                <option
-                  key={task.id}
-                  value={task.id}
-                >
-                  {task.title}
-                </option>
-              ))}
 
-              <option value="manual">
-                Task not listed — enter manually
-              </option>
+              {tasks.map(
+                (task) => (
+
+                  <option
+                    key={task.id}
+                    value={task.id}
+                  >
+
+                    {task.title}
+
+                  </option>
+
+                )
+              )}
+
             </select>
+
           </div>
 
-          {taskId === "manual" && (
-            <div>
-              <label className="mb-2 block text-sm font-semibold text-slate-700">
-                Task title *
-              </label>
 
-              <input
-                required
-                value={manualTask}
-                onChange={(event) =>
-                  setManualTask(
-                    event.target.value
-                  )
-                }
-                placeholder="Enter task title"
-                className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-100"
-              />
-            </div>
-          )}
+          {/* ========================================
+              DESCRIPTION
+          ======================================== */}
 
           <div>
-            <div className="mb-2 flex justify-between">
+
+            <div className="mb-2 flex items-center justify-between">
+
               <label className="text-sm font-semibold text-slate-700">
-                Description *
+                Description
               </label>
 
               <span className="text-xs text-slate-400">
-                {description.length}/500
+                {form.description.length}/5000
               </span>
+
             </div>
 
+
             <textarea
-              required
+              name="description"
               rows={5}
-              maxLength={500}
-              value={description}
-              onChange={(event) =>
-                setDescription(
-                  event.target.value
-                )
-              }
+              maxLength={5000}
+              value={form.description}
+              onChange={handleChange}
               placeholder="Describe what you worked on..."
-              className="w-full resize-none rounded-lg border border-slate-300 px-3 py-2.5 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-100"
+              className="w-full resize-none rounded-lg border border-slate-300 px-3 py-2.5 text-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
             />
+
           </div>
 
+
+          {/* ========================================
+              DURATION
+          ======================================== */}
+
           <div>
-            <label className="mb-2 block text-sm font-semibold text-slate-700">
-              Code links
+
+            <label className="mb-3 block text-sm font-semibold text-slate-700">
+              Duration *
             </label>
 
+
+            {/* QUICK SELECT */}
+
+            <div className="mb-4 flex flex-wrap gap-2">
+
+              {[
+                {
+                  label: "15m",
+                  minutes: 15,
+                },
+                {
+                  label: "30m",
+                  minutes: 30,
+                },
+                {
+                  label: "1h",
+                  minutes: 60,
+                },
+                {
+                  label: "2h",
+                  minutes: 120,
+                },
+                {
+                  label: "4h",
+                  minutes: 240,
+                },
+              ].map((option) => (
+
+                <button
+                  key={option.minutes}
+                  type="button"
+                  onClick={() =>
+                    setDurationFromMinutes(
+                      option.minutes,
+                      setForm
+                    )
+                  }
+                  className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 transition hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-700"
+                >
+
+                  {option.label}
+
+                </button>
+
+              ))}
+
+            </div>
+
+
+            {/* CUSTOM HOURS + MINUTES */}
+
+            <div className="grid grid-cols-2 gap-3">
+
+              <div>
+
+                <input
+                  type="number"
+                  name="duration_hours"
+                  min="0"
+                  max="24"
+                  value={
+                    form.duration_hours
+                  }
+                  onChange={handleChange}
+                  placeholder="0"
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+                />
+
+                <p className="mt-1 text-xs text-slate-400">
+                  Hours
+                </p>
+
+              </div>
+
+
+              <div>
+
+                <input
+                  type="number"
+                  name="duration_minutes"
+                  min="0"
+                  max="59"
+                  value={
+                    form.duration_minutes
+                  }
+                  onChange={handleChange}
+                  placeholder="0"
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+                />
+
+                <p className="mt-1 text-xs text-slate-400">
+                  Minutes
+                </p>
+
+              </div>
+
+            </div>
+
+          </div>
+
+
+          {/* ========================================
+              CODE LINKS
+          ======================================== */}
+
+          <div>
+
+            <label className="mb-2 block text-sm font-semibold text-slate-700">
+
+              Code links
+
+              <span className="ml-1 font-normal text-slate-400">
+                Optional
+              </span>
+
+            </label>
+
+
+            <p className="mb-3 text-xs leading-5 text-slate-500">
+              Add GitHub commits, pull requests,
+              branches or other related URLs.
+            </p>
+
+
             <div className="space-y-2">
+
               {codeLinks.map(
                 (link, index) => (
+
                   <div
                     key={index}
                     className="flex gap-2"
                   >
+
                     <div className="relative flex-1">
+
                       <Link2
                         size={16}
                         className="absolute left-3 top-3 text-slate-400"
@@ -291,135 +863,365 @@ function TimeEntryForm({
                           )
                         }
                         placeholder="https://github.com/..."
-                        className="w-full rounded-lg border border-slate-300 py-2.5 pl-9 pr-3 text-sm focus:border-indigo-500 focus:outline-none"
+                        className="w-full rounded-lg border border-slate-300 py-2.5 pl-9 pr-3 text-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
                       />
+
                     </div>
 
-                    {codeLinks.length > 1 && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          removeLink(index)
-                        }
-                        className="rounded-lg border border-slate-200 px-3 text-slate-400 hover:bg-red-50 hover:text-red-500"
-                      >
-                        <X size={16} />
-                      </button>
-                    )}
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        removeLink(index)
+                      }
+                      className="rounded-lg border border-slate-200 px-3 text-slate-400 transition hover:bg-red-50 hover:text-red-500"
+                      title="Remove link"
+                    >
+                      <X size={16} />
+                    </button>
+
                   </div>
+
                 )
               )}
+
             </div>
+
 
             <button
               type="button"
               onClick={addLink}
-              className="mt-3 flex items-center gap-1 text-sm font-semibold text-indigo-600"
+              className="mt-3 inline-flex items-center gap-1 text-sm font-semibold text-indigo-600 hover:text-indigo-700"
             >
+
               <Plus size={15} />
+
               Add another link
+
             </button>
+
           </div>
 
-          <div>
-            <label className="mb-3 block text-sm font-semibold text-slate-700">
-              Duration
-            </label>
 
-            <div className="flex flex-wrap gap-2">
-              {[15, 30, 60, 120].map(
-                (minutes) => (
-                  <button
-                    key={minutes}
-                    type="button"
-                    onClick={() =>
-                      setDuration(minutes)
-                    }
-                    className={`rounded-lg border px-4 py-2 text-sm font-medium ${
-                      duration === minutes
-                        ? "border-indigo-600 bg-indigo-50 text-indigo-700"
-                        : "border-slate-200 text-slate-600 hover:bg-slate-50"
-                    }`}
-                  >
-                    {minutes < 60
-                      ? `${minutes}m`
-                      : `${minutes / 60}h`}
-                  </button>
-                )
-              )}
-            </div>
-          </div>
+          {/* ========================================
+              BILLABLE
+          ======================================== */}
 
-          <label className="flex items-center justify-between rounded-lg border border-slate-200 p-4">
+          <label className="flex cursor-pointer items-center justify-between rounded-lg border border-slate-200 p-4">
+
             <div>
+
               <p className="text-sm font-semibold text-slate-700">
                 Billable
               </p>
 
-              <p className="text-xs text-slate-500">
+              <p className="mt-1 text-xs text-slate-500">
                 Count this time as billable work.
               </p>
+
             </div>
+
 
             <input
               type="checkbox"
-              checked={billable}
-              onChange={(event) =>
-                setBillable(
-                  event.target.checked
-                )
-              }
+              name="billable"
+              checked={form.billable}
+              onChange={handleChange}
               className="h-4 w-4 accent-indigo-600"
             />
+
           </label>
 
-          {taskId &&
-            taskId !== "manual" && (
-              <label className="flex items-start gap-3 rounded-lg bg-indigo-50 p-4">
-                <input
-                  type="checkbox"
-                  checked={updateGithub}
-                  onChange={(event) =>
-                    setUpdateGithub(
-                      event.target.checked
-                    )
-                  }
-                  className="mt-1 h-4 w-4 accent-indigo-600"
-                />
 
-                <div>
-                  <p className="text-sm font-semibold text-indigo-900">
-                    Also update task description
-                    in GitHub
-                  </p>
-
-                  <p className="mt-1 text-xs text-indigo-700">
-                    Last synced 5 minutes ago
-                  </p>
-                </div>
-              </label>
-            )}
+          {/* ========================================
+              ACTION BUTTONS
+          ======================================== */}
 
           <div className="flex justify-end gap-3 border-t border-slate-200 pt-5">
+
             <button
               type="button"
               onClick={onClose}
-              className="rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-semibold text-slate-700"
+              disabled={saving}
+              className="rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
             >
               Cancel
             </button>
 
+
             <button
               type="submit"
-              className="rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700"
+              disabled={
+                saving ||
+                loadingProjects
+              }
+              className="inline-flex min-w-32 items-center justify-center gap-2 rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              Save Entry
+
+              {saving ? (
+
+                <RefreshCw
+                  size={17}
+                  className="animate-spin"
+                />
+
+              ) : (
+
+                <Save size={17} />
+
+              )}
+
+              {saving
+                ? "Saving..."
+                : isEditing
+                  ? "Save Changes"
+                  : "Save Entry"}
+
             </button>
+
           </div>
+
         </form>
+
       </div>
+
     </div>
   );
 }
+
+
+// =========================================================
+// INITIAL FORM
+// =========================================================
+
+function createInitialForm(
+  entry,
+  initialDate
+) {
+  if (entry) {
+    const totalMinutes =
+      Number(
+        entry.duration_minutes || 0
+      );
+
+    return {
+      work_date:
+        entry.work_date,
+
+      project_id:
+        entry.project_id || "",
+
+      task_id:
+        entry.task_id || "",
+
+      description:
+        entry.description || "",
+
+      duration_hours:
+        String(
+          Math.floor(
+            totalMinutes / 60
+          )
+        ),
+
+      duration_minutes:
+        String(
+          totalMinutes % 60
+        ),
+
+      billable:
+        Boolean(
+          entry.billable
+        ),
+    };
+  }
+
+
+  let workDate =
+    initialDate
+      ? normalizeDate(initialDate)
+      : getTodayDateString();
+
+
+  /*
+   * Protect against a parent accidentally
+   * passing a future day.
+   */
+  if (isFutureDate(workDate)) {
+    workDate =
+      getTodayDateString();
+  }
+
+
+  return {
+    work_date: workDate,
+    project_id: "",
+    task_id: "",
+    description: "",
+    duration_hours: "1",
+    duration_minutes: "0",
+    billable: false,
+  };
+}
+
+
+// =========================================================
+// INITIAL CODE LINKS
+// =========================================================
+
+function createInitialCodeLinks(
+  entry
+) {
+  if (
+    entry?.code_links?.length
+  ) {
+    return entry.code_links.map(
+      (link) =>
+        link.url || ""
+    );
+  }
+
+  return [""];
+}
+
+
+// =========================================================
+// QUICK DURATION
+// =========================================================
+
+function setDurationFromMinutes(
+  totalMinutes,
+  setForm
+) {
+  setForm((previous) => ({
+    ...previous,
+
+    duration_hours:
+      String(
+        Math.floor(
+          totalMinutes / 60
+        )
+      ),
+
+    duration_minutes:
+      String(
+        totalMinutes % 60
+      ),
+  }));
+}
+
+
+// =========================================================
+// DATE HELPERS
+// =========================================================
+
+function getTodayDateString() {
+  return formatDate(
+    new Date()
+  );
+}
+
+
+function normalizeDate(value) {
+  if (
+    typeof value === "string"
+  ) {
+    return value;
+  }
+
+  return formatDate(value);
+}
+
+
+function formatDate(value) {
+  const date =
+    new Date(value);
+
+  const year =
+    date.getFullYear();
+
+  const month =
+    String(
+      date.getMonth() + 1
+    ).padStart(
+      2,
+      "0"
+    );
+
+  const day =
+    String(
+      date.getDate()
+    ).padStart(
+      2,
+      "0"
+    );
+
+  return `${year}-${month}-${day}`;
+}
+
+
+function isFutureDate(
+  workDate
+) {
+  if (!workDate) {
+    return false;
+  }
+
+  const selected =
+    new Date(
+      `${workDate}T00:00:00`
+    );
+
+  const today =
+    new Date();
+
+  today.setHours(
+    0,
+    0,
+    0,
+    0
+  );
+
+  return selected > today;
+}
+
+
+// =========================================================
+// URL VALIDATION
+// =========================================================
+
+function isValidUrl(value) {
+  try {
+    const url =
+      new URL(value);
+
+    return (
+      url.protocol === "http:" ||
+      url.protocol === "https:"
+    );
+  } catch {
+    return false;
+  }
+}
+
+
+// =========================================================
+// IDEMPOTENCY
+// =========================================================
+
+function createIdempotencyKey() {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID ===
+      "function"
+  ) {
+    return crypto.randomUUID();
+  }
+
+  return `time-entry-${Date.now()}-${Math.random()
+    .toString(36)
+    .slice(2)}`;
+}
+
 
 export default TimeEntryForm;
