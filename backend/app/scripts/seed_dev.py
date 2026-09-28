@@ -620,3 +620,7 @@ async def main() -> None:
         await session.commit()
 
     print("[seed] done")
+
+
+if __name__ == "__main__":
+    asyncio.run(main()) 

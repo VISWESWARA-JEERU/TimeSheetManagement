@@ -94,3 +94,10 @@ temp/
 
 # Local development
 .local/
+
+
+CREATE USER timesheet WITH PASSWORD 'timesheet';
+
+CREATE DATABASE timesheet
+WITH OWNER = timesheet
+ENCODING = 'UTF8';
