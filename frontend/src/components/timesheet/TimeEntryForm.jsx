@@ -245,13 +245,42 @@ function TimeEntryForm({
   async function handleSubmit(event) {
     event.preventDefault();
 
+    console.log(
+      "========== SAVE BUTTON CLICKED =========="
+    );
+
+    console.log(
+      "isEditing:",
+      isEditing
+    );
+
+    console.log(
+      "entry:",
+      entry
+    );
+
+    console.log(
+      "form:",
+      form
+    );
+
+    console.log(
+      "codeLinks:",
+      codeLinks
+    );
+
     setError("");
+
 
     // ---------------------------------------------------
     // Date validation
     // ---------------------------------------------------
 
     if (!form.work_date) {
+      console.log(
+        "SAVE STOPPED: work_date missing"
+      );
+
       setError(
         "Please select a work date."
       );
@@ -259,11 +288,16 @@ function TimeEntryForm({
       return;
     }
 
+
     if (
       isFutureDate(
         form.work_date
       )
     ) {
+      console.log(
+        "SAVE STOPPED: future date"
+      );
+
       setError(
         "You cannot add a time entry for a future date."
       );
@@ -277,6 +311,10 @@ function TimeEntryForm({
     // ---------------------------------------------------
 
     if (!form.project_id) {
+      console.log(
+        "SAVE STOPPED: project missing"
+      );
+
       setError(
         "Please select a project."
       );
@@ -299,11 +337,20 @@ function TimeEntryForm({
         form.duration_minutes || 0
       );
 
+
     if (
       hours < 0 ||
       minutes < 0 ||
       minutes > 59
     ) {
+      console.log(
+        "SAVE STOPPED: invalid duration",
+        {
+          hours,
+          minutes,
+        }
+      );
+
       setError(
         "Please enter a valid duration."
       );
@@ -311,13 +358,20 @@ function TimeEntryForm({
       return;
     }
 
+
     const durationMinutes =
       hours * 60 + minutes;
+
 
     if (
       durationMinutes < 1 ||
       durationMinutes > 1440
     ) {
+      console.log(
+        "SAVE STOPPED: duration outside range",
+        durationMinutes
+      );
+
       setError(
         "Duration must be between 1 minute and 24 hours."
       );
@@ -337,8 +391,14 @@ function TimeEntryForm({
         )
         .filter(Boolean);
 
+
     for (const link of cleanLinks) {
       if (!isValidUrl(link)) {
+        console.log(
+          "SAVE STOPPED: invalid URL",
+          link
+        );
+
         setError(
           "Please enter a valid code link URL."
         );
@@ -353,6 +413,7 @@ function TimeEntryForm({
     // ---------------------------------------------------
 
     setSaving(true);
+
 
     try {
       const commonPayload = {
@@ -396,16 +457,54 @@ function TimeEntryForm({
       // -------------------------------------------------
 
       if (isEditing) {
+        const updatePayload = {
+          version:
+            entry.version,
+
+          ...commonPayload,
+        };
+
+
+        console.log(
+          "========== CALLING PATCH =========="
+        );
+
+        console.log(
+          "Entry ID:",
+          entry.id
+        );
+
+        console.log(
+          "Entry status:",
+          entry.status
+        );
+
+        console.log(
+          "Entry version:",
+          entry.version
+        );
+
+        console.log(
+          "PATCH payload:",
+          updatePayload
+        );
+
+
         savedEntry =
           await timeEntryService.update(
             entry.id,
-            {
-              version:
-                entry.version,
-
-              ...commonPayload,
-            }
+            updatePayload
           );
+
+
+        console.log(
+          "========== PATCH SUCCESS =========="
+        );
+
+        console.log(
+          "Saved entry:",
+          savedEntry
+        );
       }
 
 
@@ -414,13 +513,38 @@ function TimeEntryForm({
       // -------------------------------------------------
 
       else {
-        savedEntry =
-          await timeEntryService.create({
-            ...commonPayload,
+        const createPayload = {
+          ...commonPayload,
 
-            client_idempotency_key:
-              createIdempotencyKey(),
-          });
+          client_idempotency_key:
+            createIdempotencyKey(),
+        };
+
+
+        console.log(
+          "========== CALLING CREATE =========="
+        );
+
+        console.log(
+          "POST payload:",
+          createPayload
+        );
+
+
+        savedEntry =
+          await timeEntryService.create(
+            createPayload
+          );
+
+
+        console.log(
+          "========== CREATE SUCCESS =========="
+        );
+
+        console.log(
+          "Saved entry:",
+          savedEntry
+        );
       }
 
 
@@ -428,22 +552,54 @@ function TimeEntryForm({
        * Parent can reload the Today page
        * or Timesheet page after save.
        */
+
+      console.log(
+        "Calling onSaved..."
+      );
+
       await onSaved?.(
         savedEntry
       );
 
+
+      console.log(
+        "Closing form..."
+      );
+
       onClose?.();
 
+
     } catch (requestError) {
+      console.error(
+        "========== SAVE FAILED =========="
+      );
+
       console.error(
         "Failed to save time entry:",
         requestError
       );
 
+      console.error(
+        "Status:",
+        requestError?.status
+      );
+
+      console.error(
+        "Code:",
+        requestError?.code
+      );
+
+      console.error(
+        "Details:",
+        requestError?.details
+      );
+
+
       setError(
         requestError.message ||
           "Unable to save time entry."
       );
+
 
     } finally {
       setSaving(false);
@@ -506,6 +662,7 @@ function TimeEntryForm({
 
         <form
           onSubmit={handleSubmit}
+          noValidate
           className="space-y-6 p-6"
         >
 
@@ -1047,6 +1204,7 @@ function createInitialForm(
    * Protect against a parent accidentally
    * passing a future day.
    */
+
   if (isFutureDate(workDate)) {
     workDate =
       getTodayDateString();

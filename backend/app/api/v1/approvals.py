@@ -4,30 +4,31 @@ import uuid
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies.auth import get_current_user
 from app.core.database import get_db
 from app.core.exceptions import Forbidden
 from app.core.permissions import CurrentUser
+
+from app.models.attendance_day import AttendanceDay
 from app.models.enums import TimesheetStatus
+from app.models.organization import OrgPolicy
 from app.models.team import TeamMember
+from app.models.time_entry import TimeEntry
 from app.models.timesheet_period import TimesheetPeriod
 from app.models.user import AppUser
+
 from app.schemas.timesheet import (
     ApprovalOut,
     TimesheetApprovalRequest,
     TimesheetPeriodOut,
     TimesheetRejectRequest,
 )
+
 from app.services import timesheet_service
 
-from sqlalchemy import func, select
-
-from app.models.attendance_day import AttendanceDay
-from app.models.organization import OrgPolicy
-from app.models.time_entry import TimeEntry
 
 router = APIRouter(
     prefix="/approvals",
@@ -36,15 +37,14 @@ router = APIRouter(
 
 
 # =========================================================
-# MANAGER CHECK
+# MANAGER / ADMIN CHECK
 # =========================================================
-
 
 def _require_manager_or_admin(
     user: CurrentUser,
 ) -> None:
     """
-    Only managers and admins may use
+    Only managers and admins may access
     approval endpoints.
     """
 
@@ -61,35 +61,42 @@ def _require_manager_or_admin(
 # MANAGED USER IDS
 # =========================================================
 
-
 async def _get_managed_user_ids(
     db: AsyncSession,
     *,
     user: CurrentUser,
 ) -> set[uuid.UUID]:
     """
-    Return the user IDs the current manager
-    is allowed to review.
-
-    Admins may review all users.
-    Managers may review members of teams
-    they manage.
+    Return users that the current
+    manager/admin is allowed to review.
     """
 
+    # -----------------------------------------------------
+    # ADMIN
+    # Same organization only
+    # -----------------------------------------------------
+
     if user.is_admin:
-       stmt = select(
-        AppUser.id
-       ).where(
-        AppUser.org_id == user.org_id
-    )
 
-       result = await db.execute(
-        stmt
-    )
+        stmt = select(
+            AppUser.id
+        ).where(
+            AppUser.org_id
+            == user.org_id
+        )
 
-       return set(
-        result.scalars().all()
-    )
+        result = await db.execute(
+            stmt
+        )
+
+        return set(
+            result.scalars().all()
+        )
+
+
+    # -----------------------------------------------------
+    # MANAGER
+    # -----------------------------------------------------
 
     if not user.managed_team_ids:
         return set()
@@ -110,8 +117,8 @@ async def _get_managed_user_ids(
         result.scalars().all()
     )
 
-    # Do not include the manager's own
-    # timesheet in their approval queue.
+    # Manager should not approve
+    # their own timesheet.
     managed_user_ids.discard(
         user.id
     )
@@ -120,9 +127,8 @@ async def _get_managed_user_ids(
 
 
 # =========================================================
-# CHECK PERIOD ACCESS
+# PERIOD ACCESS CHECK
 # =========================================================
-
 
 async def _require_period_access(
     db: AsyncSession,
@@ -131,12 +137,9 @@ async def _require_period_access(
     period: TimesheetPeriod,
 ) -> None:
     """
-    Ensure that the manager is allowed
-    to approve/reject this employee.
+    Verify that current manager/admin
+    may review this timesheet.
     """
-
-    if user.is_admin:
-        return
 
     managed_user_ids = (
         await _get_managed_user_ids(
@@ -157,160 +160,31 @@ async def _require_period_access(
 # =========================================================
 # LIST PENDING APPROVALS
 # =========================================================
-@router.get(
-    "",
-    response_model=list[ApprovalOut],
-)
-async def list_approvals(
-    db: AsyncSession = Depends(get_db),
-    user: CurrentUser = Depends(
-        get_current_user
-    ),
-) -> list[ApprovalOut]:
-    """
-    Return submitted timesheets awaiting review.
-
-    Managers see only members of teams
-    they manage.
-
-    Admins see all submitted timesheets.
-    """
-
-    _require_manager_or_admin(
-        user
-    )
-
-    managed_user_ids = (
-        await _get_managed_user_ids(
-            db,
-            user=user,
-        )
-    )
-
-    if (
-        not user.is_admin
-        and not managed_user_ids
-    ):
-        return []
-
-    # =====================================================
-    # JOIN TIMESHEET + USER
-    # =====================================================
-
-    stmt = (
-        select(
-            TimesheetPeriod,
-            AppUser,
-        )
-        .join(
-            AppUser,
-            AppUser.id
-            == TimesheetPeriod.user_id,
-        )
-        .where(
-            TimesheetPeriod.status
-            == TimesheetStatus.submitted
-        )
-    )
-
-    # =====================================================
-    # MANAGER SCOPE
-    # =====================================================
-
-    if not user.is_admin:
-        stmt = stmt.where(
-            TimesheetPeriod.user_id.in_(
-                managed_user_ids
-            )
-        )
-
-    stmt = stmt.order_by(
-        TimesheetPeriod.submitted_at.asc()
-    )
-
-    result = await db.execute(
-        stmt
-    )
-
-    rows = result.all()
-
-    # =====================================================
-    # BUILD RESPONSE
-    # =====================================================
-
-    return [
-        ApprovalOut(
-            id=period.id,
-
-            user_id=period.user_id,
-
-            employee_name=
-                employee.full_name,
-
-            employee_email=
-                employee.email,
-
-            period_start=
-                period.period_start,
-
-            period_end=
-                period.period_end,
-
-            status=
-                period.status,
-
-            submitted_at=
-                period.submitted_at,
-
-            approved_by=
-                period.approved_by,
-
-            approved_at=
-                period.approved_at,
-
-            comment=
-                period.comment,
-
-            version=
-                period.version,
-
-            created_at=
-                period.created_at,
-
-            updated_at=
-                period.updated_at,
-        )
-
-        for period, employee in rows
-    ]
-
-
-# =========================================================
-# APPROVE
-# =========================================================
-
 
 @router.get(
     "",
     response_model=list[ApprovalOut],
 )
 async def list_approvals(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(
+        get_db
+    ),
     user: CurrentUser = Depends(
         get_current_user
     ),
 ) -> list[ApprovalOut]:
     """
-    Return submitted timesheets awaiting review.
+    Return submitted weekly timesheets.
 
-    Managers see only members of teams
-    they manage.
+    Manager:
+    - only managed team members
 
-    Admins see all submitted timesheets.
+    Admin:
+    - all users in same organization
 
-    Also returns:
-    - attendance time
+    Includes:
     - logged time
+    - attendance time
     - expected time
     - variance
     - recording coverage
@@ -321,6 +195,11 @@ async def list_approvals(
         user
     )
 
+
+    # =====================================================
+    # USERS CURRENT REVIEWER CAN ACCESS
+    # =====================================================
+
     managed_user_ids = (
         await _get_managed_user_ids(
             db,
@@ -328,10 +207,7 @@ async def list_approvals(
         )
     )
 
-    if (
-        not user.is_admin
-        and not managed_user_ids
-    ):
+    if not managed_user_ids:
         return []
 
 
@@ -355,12 +231,16 @@ async def list_approvals(
         .scalar_one_or_none()
     )
 
+
+    # Default = 8 hours
     workday_hours = (
         policy.workday_hours
         if policy
         else 8
     )
 
+
+    # Default allowed difference = 60 minutes
     variance_threshold_minutes = (
         policy.variance_threshold_minutes
         if policy
@@ -369,7 +249,7 @@ async def list_approvals(
 
 
     # =====================================================
-    # TIMESHEET + EMPLOYEE
+    # LOAD SUBMITTED PERIODS
     # =====================================================
 
     stmt = (
@@ -384,25 +264,22 @@ async def list_approvals(
         )
         .where(
             TimesheetPeriod.status
-            == TimesheetStatus.submitted
-        )
-    )
+            == TimesheetStatus.submitted,
 
-
-    # =====================================================
-    # MANAGER SCOPE
-    # =====================================================
-
-    if not user.is_admin:
-        stmt = stmt.where(
             TimesheetPeriod.user_id.in_(
                 managed_user_ids
-            )
-        )
+            ),
 
-    stmt = stmt.order_by(
-        TimesheetPeriod.submitted_at.asc()
+            AppUser.org_id
+            == user.org_id,
+        )
+        .order_by(
+            TimesheetPeriod
+            .submitted_at
+            .asc()
+        )
     )
+
 
     result = await db.execute(
         stmt
@@ -415,7 +292,7 @@ async def list_approvals(
 
 
     # =====================================================
-    # BUILD EACH APPROVAL
+    # BUILD APPROVAL RESPONSE
     # =====================================================
 
     for period, employee in rows:
@@ -442,9 +319,11 @@ async def list_approvals(
             <= period.period_end,
         )
 
+
         logged_result = await db.execute(
             logged_stmt
         )
+
 
         logged_minutes = int(
             logged_result.scalar_one()
@@ -474,14 +353,17 @@ async def list_approvals(
             <= period.period_end,
         )
 
+
         attendance_result = await db.execute(
             attendance_stmt
         )
+
 
         attendance_seconds = int(
             attendance_result.scalar_one()
             or 0
         )
+
 
         attendance_minutes = (
             attendance_seconds // 60
@@ -490,7 +372,7 @@ async def list_approvals(
 
         # -------------------------------------------------
         # WORKING DAYS
-        # Monday-Friday only
+        # Monday - Friday
         # -------------------------------------------------
 
         working_days = 0
@@ -499,11 +381,16 @@ async def list_approvals(
             period.period_start
         )
 
+
         while (
             current_date
             <= period.period_end
         ):
-            if current_date.weekday() < 5:
+
+            if (
+                current_date.weekday()
+                < 5
+            ):
                 working_days += 1
 
             current_date = (
@@ -524,8 +411,7 @@ async def list_approvals(
 
 
         # -------------------------------------------------
-        # VARIANCE
-        # logged - attendance
+        # LOGGED VS ATTENDANCE VARIANCE
         # -------------------------------------------------
 
         variance_minutes = (
@@ -535,8 +421,7 @@ async def list_approvals(
 
 
         # -------------------------------------------------
-        # ATTENDANCE VARIANCE
-        # attendance - expected
+        # ATTENDANCE VS EXPECTED
         # -------------------------------------------------
 
         attendance_variance_minutes = (
@@ -550,6 +435,7 @@ async def list_approvals(
         # -------------------------------------------------
 
         if attendance_minutes > 0:
+
             recording_coverage_percent = round(
                 (
                     logged_minutes
@@ -558,14 +444,14 @@ async def list_approvals(
                 * 100,
                 1,
             )
+
         else:
-            recording_coverage_percent = (
-                0.0
-            )
+
+            recording_coverage_percent = 0.0
 
 
         # -------------------------------------------------
-        # 8-HOUR / POLICY THRESHOLD
+        # EXPECTED HOURS SATISFIED
         # -------------------------------------------------
 
         threshold_satisfied = (
@@ -575,7 +461,7 @@ async def list_approvals(
 
 
         # -------------------------------------------------
-        # OPTIONAL VARIANCE FLAG
+        # RECORDING VARIANCE POLICY
         # -------------------------------------------------
 
         variance_within_policy = (
@@ -586,69 +472,99 @@ async def list_approvals(
         )
 
 
+        # -------------------------------------------------
+        # RESPONSE
+        # -------------------------------------------------
+
+        approval_data = {
+            "id":
+                period.id,
+
+            "user_id":
+                period.user_id,
+
+            "employee_name":
+                employee.full_name,
+
+            "employee_email":
+                employee.email,
+
+            "period_start":
+                period.period_start,
+
+            "period_end":
+                period.period_end,
+
+            "status":
+                period.status,
+
+            "submitted_at":
+                period.submitted_at,
+
+            "approved_by":
+                period.approved_by,
+
+            "approved_at":
+                period.approved_at,
+
+            "comment":
+                period.comment,
+
+            "version":
+                period.version,
+
+            "created_at":
+                period.created_at,
+
+            "updated_at":
+                period.updated_at,
+
+            "logged_minutes":
+                logged_minutes,
+
+            "attendance_minutes":
+                attendance_minutes,
+
+            "expected_minutes":
+                expected_minutes,
+
+            "variance_minutes":
+                variance_minutes,
+
+            "attendance_variance_minutes":
+                attendance_variance_minutes,
+
+            "recording_coverage_percent":
+                recording_coverage_percent,
+
+            "threshold_satisfied":
+                threshold_satisfied,
+        }
+
+
+        # These fields are optional in case
+        # you added them to ApprovalOut.
+        if (
+            "variance_within_policy"
+            in ApprovalOut.model_fields
+        ):
+            approval_data[
+                "variance_within_policy"
+            ] = variance_within_policy
+
+
+        if (
+            "variance_threshold_minutes"
+            in ApprovalOut.model_fields
+        ):
+            approval_data[
+                "variance_threshold_minutes"
+            ] = variance_threshold_minutes
+
+
         approvals.append(
             ApprovalOut(
-                id=period.id,
-
-                user_id=
-                    period.user_id,
-
-                employee_name=
-                    employee.full_name,
-
-                employee_email=
-                    employee.email,
-
-                period_start=
-                    period.period_start,
-
-                period_end=
-                    period.period_end,
-
-                status=
-                    period.status,
-
-                submitted_at=
-                    period.submitted_at,
-
-                approved_by=
-                    period.approved_by,
-
-                approved_at=
-                    period.approved_at,
-
-                comment=
-                    period.comment,
-
-                version=
-                    period.version,
-
-                created_at=
-                    period.created_at,
-
-                updated_at=
-                    period.updated_at,
-
-                logged_minutes=
-                    logged_minutes,
-
-                attendance_minutes=
-                    attendance_minutes,
-
-                expected_minutes=
-                    expected_minutes,
-
-                variance_minutes=
-                    variance_minutes,
-
-                attendance_variance_minutes=
-                    attendance_variance_minutes,
-
-                recording_coverage_percent=
-                    recording_coverage_percent,
-
-                threshold_satisfied=
-                    threshold_satisfied,
+                **approval_data
             )
         )
 
@@ -657,9 +573,91 @@ async def list_approvals(
 
 
 # =========================================================
-# REJECT / REQUEST CHANGES
+# APPROVE TIMESHEET
 # =========================================================
 
+@router.post(
+    "/{period_id}/approve",
+    response_model=TimesheetPeriodOut,
+)
+async def approve(
+    period_id: uuid.UUID,
+    payload: TimesheetApprovalRequest,
+    db: AsyncSession = Depends(
+        get_db
+    ),
+    user: CurrentUser = Depends(
+        get_current_user
+    ),
+) -> TimesheetPeriodOut:
+    """
+    Approve one submitted weekly timesheet.
+    """
+
+    _require_manager_or_admin(
+        user
+    )
+
+
+    # =====================================================
+    # GET PERIOD
+    # =====================================================
+
+    period = (
+        await timesheet_service
+        .get_period_or_404(
+            db,
+            period_id=period_id,
+        )
+    )
+
+
+    # =====================================================
+    # ACCESS CHECK
+    # =====================================================
+
+    await _require_period_access(
+        db,
+        user=user,
+        period=period,
+    )
+
+
+    # =====================================================
+    # APPROVE
+    # =====================================================
+
+    approved_period = (
+        await timesheet_service
+        .approve_timesheet(
+            db,
+            period_id=period_id,
+            approver_user_id=user.id,
+            version=payload.version,
+            comment=payload.comment,
+        )
+    )
+
+
+    # =====================================================
+    # REFRESH DATABASE VALUES
+    # =====================================================
+
+    await db.flush()
+
+    await db.refresh(
+        approved_period
+    )
+
+
+    return TimesheetPeriodOut.model_validate(
+        approved_period
+    )
+
+
+# =========================================================
+# REJECT / REQUEST CHANGES
+# =========================================================
 
 @router.post(
     "/{period_id}/reject",
@@ -676,13 +674,20 @@ async def reject(
     ),
 ) -> TimesheetPeriodOut:
     """
-    Reject a submitted timesheet and
-    reopen its entries for editing.
+    Reject a submitted weekly timesheet.
+
+    Employee can then correct entries
+    and resubmit.
     """
 
     _require_manager_or_admin(
         user
     )
+
+
+    # =====================================================
+    # GET PERIOD
+    # =====================================================
 
     period = (
         await timesheet_service
@@ -692,11 +697,21 @@ async def reject(
         )
     )
 
+
+    # =====================================================
+    # ACCESS CHECK
+    # =====================================================
+
     await _require_period_access(
         db,
         user=user,
         period=period,
     )
+
+
+    # =====================================================
+    # REJECT
+    # =====================================================
 
     rejected_period = (
         await timesheet_service
@@ -708,6 +723,18 @@ async def reject(
             comment=payload.comment,
         )
     )
+
+
+    # =====================================================
+    # REFRESH DATABASE VALUES
+    # =====================================================
+
+    await db.flush()
+
+    await db.refresh(
+        rejected_period
+    )
+
 
     return TimesheetPeriodOut.model_validate(
         rejected_period
