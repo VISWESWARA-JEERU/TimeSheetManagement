@@ -28,21 +28,19 @@ function Sidebar({ open, onClose }) {
       path: "/timesheet",
       icon: CalendarDays,
       show: true,
-      comingSoon: true,
+      
     },
     {
       name: "Tasks",
       path: "/tasks",
       icon: CheckSquare,
-      show: true,
-      comingSoon: true,
+      show: true
     },
     {
       name: "Reports",
       path: "/reports",
       icon: FileBarChart,
-      show: true,
-      comingSoon: true,
+      show: true
     },
     {
       name: "Team",
@@ -55,7 +53,7 @@ function Sidebar({ open, onClose }) {
       path: "/approvals",
       icon: ClipboardCheck,
       show: isManager,
-      comingSoon: true,
+      
     },
     {
       name: "Admin",

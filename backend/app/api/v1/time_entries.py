@@ -176,6 +176,9 @@ async def create_time_entry(
 # UPDATE TIME ENTRY
 # =========================================================
 
+# =========================================================
+# UPDATE TIME ENTRY
+# =========================================================
 
 @router.patch(
     "/{entry_id}",
@@ -184,61 +187,31 @@ async def create_time_entry(
 async def update_time_entry(
     entry_id: uuid.UUID,
     payload: TimeEntryUpdate,
-    user: CurrentUser = Depends(
-        get_current_user
-    ),
-    db: AsyncSession = Depends(
-        get_db
-    ),
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ) -> TimeEntryOut:
-    """
-    Update a draft time entry.
 
-    The request must include
-    the current version.
-    """
-
-    entry = (
-        await time_entry_service
-        .update_time_entry(
-            db,
-            entry_id=entry_id,
-            user_id=user.id,
-            org_id=user.org_id,
-            payload=payload,
-        )
+    print(
+        ">>> PATCH TIME ENTRY CALLED:",
+        entry_id,
+        "version:",
+        payload.version,
     )
 
-
-    # =====================================================
-    # FLUSH CHANGES
-    # =====================================================
+    entry = await time_entry_service.update_time_entry(
+        db,
+        entry_id=entry_id,
+        user_id=user.id,
+        org_id=user.org_id,
+        timezone_name=user.timezone,
+        payload=payload,
+    )
 
     await db.flush()
-
-
-    # =====================================================
-    # REFRESH DATABASE GENERATED VALUES
-    #
-    # Important for:
-    # - updated_at
-    # - version
-    # - other database-generated fields
-    # =====================================================
 
     await db.refresh(
         entry
     )
-
-
-    # =====================================================
-    # LOAD CODE LINKS
-    #
-    # TimeEntryOut contains code_links.
-    # Loading this relationship here prevents
-    # async lazy-loading / MissingGreenlet errors
-    # while Pydantic builds the response.
-    # =====================================================
 
     await db.refresh(
         entry,
@@ -247,15 +220,9 @@ async def update_time_entry(
         ],
     )
 
-
-    # =====================================================
-    # RESPONSE
-    # =====================================================
-
     return TimeEntryOut.model_validate(
         entry
     )
-
 
 # =========================================================
 # DELETE TIME ENTRY

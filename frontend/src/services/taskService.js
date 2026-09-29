@@ -1,6 +1,11 @@
 import { apiClient } from "../lib/apiClient";
 
+
 export const taskService = {
+  // =====================================================
+  // LIST TASKS
+  // =====================================================
+
   async getAll({
     projectId = null,
     assignedToMe = false,
@@ -9,7 +14,10 @@ export const taskService = {
     const params = new URLSearchParams();
 
     if (projectId) {
-      params.set("project_id", projectId);
+      params.set(
+        "project_id",
+        projectId
+      );
     }
 
     params.set(
@@ -22,12 +30,15 @@ export const taskService = {
       String(activeOnly)
     );
 
-    const query = params.toString();
-
     return apiClient.get(
-      query ? `/tasks?${query}` : "/tasks"
+      `/tasks?${params.toString()}`
     );
   },
+
+
+  // =====================================================
+  // GET ONE TASK
+  // =====================================================
 
   async getById(taskId) {
     return apiClient.get(
