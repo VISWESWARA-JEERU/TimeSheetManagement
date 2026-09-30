@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import date
 
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
@@ -8,12 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies.auth import get_current_user, require_team_management
 from app.core.database import get_db
-from app.core.exceptions import NotFound
 from app.core.permissions import CurrentUser
-from app.models.enums import Role
-from app.models.user import AppUser, UserRole
+from app.models.user import AppUser
+from app.schemas.attendance import GeoEventOut, TeamAttendanceRow
 from app.schemas.team import TeamMemberWithUser, TeamOut
-from app.services import team_service
+from app.services import team_attendance_service, team_service
 
 router = APIRouter(prefix="/teams", tags=["teams"])
 
@@ -76,3 +76,43 @@ async def team_members(
             )
         )
     return out
+
+
+@router.get(
+    "/{team_id}/attendance",
+    response_model=list[TeamAttendanceRow],
+    dependencies=[Depends(require_team_management("team_id"))],
+)
+async def team_attendance(
+    team_id: uuid.UUID,
+    work_date: date,
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[TeamAttendanceRow]:
+    return await team_attendance_service.get_team_attendance(
+        db,
+        team_id=team_id,
+        org_id=user.org_id,
+        work_date=work_date,
+    )
+
+
+@router.get(
+    "/{team_id}/attendance/{user_id}/events",
+    response_model=list[GeoEventOut],
+    dependencies=[Depends(require_team_management("team_id"))],
+)
+async def team_member_attendance_events(
+    team_id: uuid.UUID,
+    user_id: uuid.UUID,
+    work_date: date,
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[GeoEventOut]:
+    return await team_attendance_service.get_member_attendance_events(
+        db,
+        team_id=team_id,
+        user_id=user_id,
+        org_id=user.org_id,
+        work_date=work_date,
+    )

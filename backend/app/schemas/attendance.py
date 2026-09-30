@@ -80,8 +80,8 @@ class TeamAttendanceRow(BaseModel):
     email: str
     full_name: str
     attendance_day: AttendanceDayOut | None = None
-    active_session: WorkSessionOut | None = None
+    active_session: bool = False
     first_login_event: GeoEventOut | None = None
     last_logout_event: GeoEventOut | None = None
     entry_count: int = 0
-    flags: list[str] = []
+    flags: list[str] = Field(default_factory=list)

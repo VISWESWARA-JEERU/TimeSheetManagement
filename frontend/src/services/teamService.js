@@ -36,4 +36,26 @@ export const teamService = {
 
     return apiClient.get(`/teams/${teamId}/members`);
   },
+
+  getAttendance(teamId, workDate) {
+    if (!teamId || !workDate) {
+      throw new Error("Team ID and work date are required.");
+    }
+
+    const params = new URLSearchParams({ work_date: workDate });
+    return apiClient.get(
+      `/teams/${teamId}/attendance?${params.toString()}`
+    );
+  },
+
+  getAttendanceEvents(teamId, userId, workDate) {
+    if (!teamId || !userId || !workDate) {
+      throw new Error("Team ID, user ID, and work date are required.");
+    }
+
+    const params = new URLSearchParams({ work_date: workDate });
+    return apiClient.get(
+      `/teams/${teamId}/attendance/${userId}/events?${params.toString()}`
+    );
+  },
 };
