@@ -11,11 +11,14 @@ import {
   CalendarDays,
   CircleDollarSign,
   Clock3,
+  Download,
   FileText,
   RefreshCw,
   WalletCards,
 } from "lucide-react";
 
+import { useAuth } from "../context/AuthContext";
+import { projectService } from "../services/projectService";
 import { reportService } from "../services/reportService";
 
 
@@ -148,6 +151,26 @@ function formatDisplayDate(value) {
       year: "numeric",
     }
   );
+}
+
+function escapeCsv(value) {
+  const text = String(value ?? "");
+  return `"${text.replaceAll('"', '""')}"`;
+}
+
+function downloadCsv(rows, filename) {
+  const content = rows.map((row) => row.map(escapeCsv).join(",")).join("\r\n");
+  const blob = new Blob([`\uFEFF${content}`], {
+    type: "text/csv;charset=utf-8",
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 
@@ -314,6 +337,7 @@ function ProjectRow({ project }) {
 // =========================================================
 
 function ReportsPage() {
+  const { isManager, isAdmin } = useAuth();
   const defaultRange =
     getCurrentMonthRange();
 
@@ -345,6 +369,15 @@ function ReportsPage() {
     setProjectReport,
   ] = useState(null);
 
+  const [memberReport, setMemberReport] = useState([]);
+  const [dailyReport, setDailyReport] = useState([]);
+  const [attendanceReport, setAttendanceReport] = useState([]);
+  const [availableProjects, setAvailableProjects] = useState([]);
+  const [availableUsers, setAvailableUsers] = useState([]);
+  const [projectId, setProjectId] = useState("");
+  const [userId, setUserId] = useState("");
+  const [billable, setBillable] = useState("");
+  const [optionsError, setOptionsError] = useState("");
 
   const [
     loading,
@@ -388,28 +421,32 @@ function ReportsPage() {
         setError("");
 
         try {
+          const filters = {
+            periodStart,
+            periodEnd,
+            projectId,
+            userId,
+            billable,
+          };
           const [
             summaryData,
             projectData,
+            memberData,
+            dailyData,
+            attendanceData,
           ] = await Promise.all([
-            reportService.getSummary({
-              periodStart,
-              periodEnd,
-            }),
-
-            reportService.getProjects({
-              periodStart,
-              periodEnd,
-            }),
+            reportService.getSummary(filters),
+            reportService.getProjects(filters),
+            reportService.getMembers(filters),
+            reportService.getDaily(filters),
+            reportService.getAttendance(filters),
           ]);
 
-          setReport(
-            summaryData
-          );
-
-          setProjectReport(
-            projectData
-          );
+          setReport(summaryData);
+          setProjectReport(projectData);
+          setMemberReport(memberData);
+          setDailyReport(dailyData);
+          setAttendanceReport(attendanceData);
 
         } catch (requestError) {
           console.error(
@@ -429,8 +466,35 @@ function ReportsPage() {
       [
         periodStart,
         periodEnd,
+        projectId,
+        userId,
+        billable,
       ]
     );
+
+  const loadFilterOptions = useCallback(async () => {
+    setOptionsError("");
+    try {
+      const projectData = await projectService.getAll({ activeOnly: false });
+      setAvailableProjects(Array.isArray(projectData) ? projectData : []);
+
+      if (isManager || isAdmin) {
+        const members = await reportService.getMembers({
+          periodStart,
+          periodEnd,
+          projectId: "",
+          userId: "",
+          billable: "",
+        });
+        setAvailableUsers(members);
+      }
+    } catch (requestError) {
+      console.error("Failed to load report filter options:", requestError);
+      setOptionsError(
+        requestError.message || "Unable to load report filter options."
+      );
+    }
+  }, [isAdmin, isManager, periodStart, periodEnd]);
 
 
   // =====================================================
@@ -440,6 +504,10 @@ function ReportsPage() {
   useEffect(() => {
     loadReports();
   }, [loadReports]);
+
+  useEffect(() => {
+    loadFilterOptions();
+  }, [loadFilterOptions]);
 
 
   // =====================================================
@@ -509,8 +577,8 @@ function ReportsPage() {
 
 
   const attendanceVarianceMinutes =
-    attendanceMinutes -
-    loggedMinutes;
+    report?.variance_minutes ??
+    loggedMinutes - attendanceMinutes;
 
 
   const billablePercentage =
@@ -536,6 +604,63 @@ function ReportsPage() {
   const projects =
     projectReport?.projects ?? [];
 
+  const attendanceByUserId = new Map(
+    attendanceReport.map((member) => [member.user_id, member])
+  );
+  const downloadReport = () => {
+    const rows = [
+      ["Section", "Date", "Member", "Project", "Logged minutes", "Attendance seconds", "Variance minutes", "Entries"],
+      ...dailyReport.map((day) => [
+        "Daily",
+        day.work_date,
+        "",
+        "",
+        day.logged_minutes,
+        day.attendance_seconds,
+        day.variance_minutes,
+        "",
+      ]),
+      ...projects.map((project) => [
+        "Project",
+        "",
+        "",
+        project.project_name,
+        project.total_minutes,
+        "",
+        "",
+        project.entry_count,
+      ]),
+      ...memberReport.map((member) => {
+        const attendance = attendanceByUserId.get(member.user_id);
+        return [
+        "Member",
+        "",
+        `${member.full_name} (${member.email})`,
+        "",
+        member.logged_minutes,
+        attendance?.attendance_seconds ?? 0,
+        attendance?.variance_minutes ?? member.logged_minutes,
+        member.entry_count,
+        ];
+      }),
+    ];
+    downloadCsv(rows, `timesheet-report_${periodStart}_${periodEnd}.csv`);
+  };
+
+  const dailyMaxMinutes = Math.max(
+    1,
+    ...dailyReport.flatMap((day) => [
+      day.logged_minutes,
+      Math.floor(day.attendance_seconds / 60),
+    ])
+  );
+  const comparisonMaxMinutes = Math.max(
+    1,
+    ...memberReport.flatMap((member) => [
+      member.logged_minutes,
+      Math.floor((attendanceByUserId.get(member.user_id)?.attendance_seconds ?? 0) / 60),
+    ])
+  );
 
   // =====================================================
   // UI
@@ -562,23 +687,26 @@ function ReportsPage() {
         </div>
 
 
-        <button
-          type="button"
-          onClick={loadReports}
-          disabled={loading}
-          className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          <RefreshCw
-            size={16}
-            className={
-              loading
-                ? "animate-spin"
-                : ""
-            }
-          />
-
-          Refresh
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={downloadReport}
+            disabled={!report || loading}
+            className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Download size={16} />
+            Export CSV
+          </button>
+          <button
+            type="button"
+            onClick={loadReports}
+            disabled={loading}
+            className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <RefreshCw size={16} className={loading ? "animate-spin" : ""} />
+            Refresh
+          </button>
+        </div>
 
       </section>
 
@@ -680,6 +808,64 @@ function ReportsPage() {
 
         </div>
 
+        <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-slate-700" htmlFor="report-project">
+              Project
+            </label>
+            <select
+              id="report-project"
+              value={projectId}
+              onChange={(event) => setProjectId(event.target.value)}
+              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm"
+            >
+              <option value="">All projects</option>
+              {availableProjects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name}{project.code ? ` (${project.code})` : ""}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {(isManager || isAdmin) && (
+            <div>
+              <label className="mb-1.5 block text-sm font-medium text-slate-700" htmlFor="report-member">
+                Team member
+              </label>
+              <select
+                id="report-member"
+                value={userId}
+                onChange={(event) => setUserId(event.target.value)}
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm"
+              >
+                <option value="">All accessible members</option>
+                {availableUsers.map((member) => (
+                  <option key={member.user_id} value={member.user_id}>
+                    {member.full_name} ({member.email})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-slate-700" htmlFor="report-billable">
+              Billable status
+            </label>
+            <select
+              id="report-billable"
+              value={billable}
+              onChange={(event) => setBillable(event.target.value)}
+              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm"
+            >
+              <option value="">All entries</option>
+              <option value="true">Billable only</option>
+              <option value="false">Non-billable only</option>
+            </select>
+          </div>
+        </div>
+
       </section>
 
 
@@ -697,6 +883,13 @@ function ReportsPage() {
             {error}
           </p>
 
+        </div>
+      )}
+
+      {optionsError && (
+        <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4">
+          <AlertCircle size={20} className="mt-0.5 text-amber-600" />
+          <p className="text-sm text-amber-800">{optionsError}</p>
         </div>
       )}
 
@@ -958,6 +1151,99 @@ function ReportsPage() {
 
             </div>
 
+          </section>
+
+          <section className="grid gap-6 lg:grid-cols-2">
+            <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+              <h2 className="text-lg font-semibold text-slate-900">Daily logged-time trend</h2>
+              <p className="mt-1 text-sm text-slate-500">Daily time entries with attendance comparison.</p>
+              <div className="mt-4 flex gap-4 text-xs text-slate-600">
+                <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-indigo-600" />Logged</span>
+                <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-emerald-600" />Attendance</span>
+              </div>
+              <div className="mt-6 space-y-3">
+                {dailyReport.map((day) => (
+                  <div key={day.work_date} className="grid grid-cols-[5rem_1fr_auto] items-center gap-3">
+                    <span className="text-xs text-slate-500">{formatDisplayDate(day.work_date)}</span>
+                    <div className="space-y-1.5">
+                      <div
+                        className="h-2 overflow-hidden rounded-full bg-slate-100"
+                        role="img"
+                        aria-label={`${formatDisplayDate(day.work_date)}: ${formatMinutes(day.logged_minutes)} logged`}
+                      >
+                        <div
+                          className="h-full rounded-full bg-indigo-600"
+                          style={{ width: `${(day.logged_minutes / dailyMaxMinutes) * 100}%` }}
+                        />
+                      </div>
+                      <div
+                        className="h-2 overflow-hidden rounded-full bg-slate-100"
+                        role="img"
+                        aria-label={`${formatDisplayDate(day.work_date)}: ${formatSeconds(day.attendance_seconds)} attendance`}
+                      >
+                        <div
+                          className="h-full rounded-full bg-emerald-600"
+                          style={{ width: `${((day.attendance_seconds / 60) / dailyMaxMinutes) * 100}%` }}
+                        />
+                      </div>
+                    </div>
+                    <span className="text-right text-xs font-semibold text-slate-700">
+                      {formatMinutes(day.logged_minutes)}<br />
+                      {formatSeconds(day.attendance_seconds)}
+                    </span>
+                  </div>
+                ))}
+                {dailyReport.length === 0 && (
+                  <p className="text-sm text-slate-500">No daily data for this period.</p>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+              <h2 className="text-lg font-semibold text-slate-900">Member logged vs attendance</h2>
+              <p className="mt-1 text-sm text-slate-500">Attendance remains unfiltered by project and billable status.</p>
+              <div className="mt-6 space-y-5">
+                {memberReport.map((member) => {
+                  const attendance = attendanceByUserId.get(member.user_id);
+                  const memberAttendance = Math.floor((attendance?.attendance_seconds ?? 0) / 60);
+                  return (
+                    <div key={member.user_id}>
+                      <div className="mb-2 flex flex-wrap justify-between gap-2 text-sm">
+                        <span className="font-medium text-slate-800">{member.full_name}</span>
+                        <span className="text-slate-500">
+                          Logged {formatMinutes(member.logged_minutes)} · Attendance {formatMinutes(memberAttendance)}
+                        </span>
+                      </div>
+                      <div className="space-y-1.5">
+                        <div
+                          className="h-2 overflow-hidden rounded-full bg-slate-100"
+                          role="img"
+                          aria-label={`${member.full_name}: ${formatMinutes(member.logged_minutes)} logged`}
+                        >
+                          <div
+                            className="h-full rounded-full bg-indigo-600"
+                            style={{ width: `${(member.logged_minutes / comparisonMaxMinutes) * 100}%` }}
+                          />
+                        </div>
+                        <div
+                          className="h-2 overflow-hidden rounded-full bg-slate-100"
+                          role="img"
+                          aria-label={`${member.full_name}: ${formatMinutes(memberAttendance)} attendance`}
+                        >
+                          <div
+                            className="h-full rounded-full bg-emerald-600"
+                            style={{ width: `${(memberAttendance / comparisonMaxMinutes) * 100}%` }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+                {memberReport.length === 0 && (
+                  <p className="text-sm text-slate-500">No member data for this period.</p>
+                )}
+              </div>
+            </div>
           </section>
 
 

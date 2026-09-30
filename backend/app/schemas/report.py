@@ -13,8 +13,7 @@ from pydantic import BaseModel, Field
 
 class ReportSummaryOut(BaseModel):
     """
-    Summary of the logged-in user's work
-    for a selected date range.
+    Summary of authorized users' work for a selected date range.
     """
 
     period_start: date
@@ -50,6 +49,8 @@ class ReportSummaryOut(BaseModel):
         default=0,
         ge=0,
     )
+
+    variance_minutes: int = 0
 
 
 # =========================================================
@@ -93,6 +94,31 @@ class ProjectReportItemOut(BaseModel):
         ge=0,
         le=100,
     )
+
+
+class MemberReportItemOut(BaseModel):
+    user_id: uuid.UUID
+    full_name: str
+    email: str
+    logged_minutes: int = Field(default=0, ge=0)
+    entry_count: int = Field(default=0, ge=0)
+
+
+class DailyReportItemOut(BaseModel):
+    work_date: date
+    logged_minutes: int = Field(default=0, ge=0)
+    attendance_seconds: int = Field(default=0, ge=0)
+    variance_minutes: int = 0
+
+
+class AttendanceComparisonItemOut(BaseModel):
+    user_id: uuid.UUID
+    full_name: str
+    email: str
+    logged_minutes: int = Field(default=0, ge=0)
+    attendance_seconds: int = Field(default=0, ge=0)
+    variance_minutes: int = 0
+    entry_count: int = Field(default=0, ge=0)
 
 
 # =========================================================
