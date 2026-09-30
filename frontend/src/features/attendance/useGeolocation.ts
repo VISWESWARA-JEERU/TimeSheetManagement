@@ -25,6 +25,7 @@ interface State {
 const initial: State = { permission: 'unknown', fix: null, error: null, loading: false };
 
 const DEVICE_KEY = 'timesheet_device_id';
+export const PENDING_LOGIN_LOCATION_KEY = 'timesheet_pending_login_location';
 
 export function getDeviceId(): string {
     if (typeof window === 'undefined') return 'server';
