@@ -8,9 +8,12 @@ import {
 } from "react";
 
 import { authService } from "../services/authService";
+import { attendanceService } from "../services/attendanceService";
 import { ApiError } from "../lib/apiClient";
 
 const AuthContext = createContext(null);
+const PENDING_CHECKIN_KEY = "timesheet_pending_checkin";
+let pendingImsCheckinPromise = null;
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
@@ -83,7 +86,39 @@ export function AuthProvider({ children }) {
 
       try {
         await loadAuthConfig();
-        await loadCurrentUser();
+        const currentUser = await loadCurrentUser();
+
+        let pendingCheckin = false;
+        try {
+          pendingCheckin =
+            window.sessionStorage.getItem(PENDING_CHECKIN_KEY) === "true";
+        } catch (error) {
+          console.error("Unable to read pending attendance check-in state:", error);
+        }
+
+        if (currentUser && pendingCheckin) {
+          if (!pendingImsCheckinPromise) {
+            pendingImsCheckinPromise = attendanceService
+              .checkIn()
+              .catch((error) => {
+                console.error("Attendance check-in failed after IMS login:", error);
+              })
+              .finally(() => {
+                try {
+                  window.sessionStorage.removeItem(PENDING_CHECKIN_KEY);
+                } catch (error) {
+                  console.error(
+                    "Unable to clear pending attendance check-in state:",
+                    error
+                  );
+                }
+
+                pendingImsCheckinPromise = null;
+              });
+          }
+
+          await pendingImsCheckinPromise;
+        }
       } finally {
         setLoading(false);
       }
@@ -103,6 +138,12 @@ export function AuthProvider({ children }) {
 
     try {
       const loggedInUser = await authService.devLogin(email);
+
+      try {
+        await attendanceService.checkIn();
+      } catch (error) {
+        console.error("Attendance check-in failed after development login:", error);
+      }
 
       setUser(loggedInUser);
 
@@ -156,6 +197,14 @@ export function AuthProvider({ children }) {
   const logout = useCallback(async () => {
     setAuthError(null);
 
+    if (user) {
+      try {
+        await attendanceService.checkOut();
+      } catch (error) {
+        console.error("Attendance check-out failed before logout:", error);
+      }
+    }
+
     try {
       const result = await authService.logout();
 
@@ -176,7 +225,7 @@ export function AuthProvider({ children }) {
 
       throw error;
     }
-  }, []);
+  }, [user]);
 
   /**
    * Reload /auth/me.

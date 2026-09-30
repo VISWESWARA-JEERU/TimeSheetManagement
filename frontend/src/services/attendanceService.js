@@ -1,5 +1,87 @@
 import { apiClient } from "../lib/apiClient";
 
+const DEVICE_ID_STORAGE_KEY = "timesheet_device_id";
+let inMemoryDeviceId = null;
+
+function createFallbackDeviceId() {
+  const bytes = new Uint8Array(16);
+  let secureRandomAvailable = false;
+
+  try {
+    if (globalThis.crypto?.getRandomValues) {
+      globalThis.crypto.getRandomValues(bytes);
+      secureRandomAvailable = true;
+    }
+  } catch (error) {
+    console.warn("Unable to generate a secure fallback device ID.", error);
+  }
+
+  if (!secureRandomAvailable) {
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Math.floor(Math.random() * 256);
+    }
+  }
+
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+  const hex = Array.from(bytes, (byte) =>
+    byte.toString(16).padStart(2, "0")
+  ).join("");
+
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20),
+  ].join("-");
+}
+
+function createDeviceId() {
+  try {
+    if (typeof globalThis.crypto?.randomUUID === "function") {
+      return globalThis.crypto.randomUUID();
+    }
+  } catch (error) {
+    console.warn("Unable to generate a secure attendance device ID.", error);
+  }
+
+  return createFallbackDeviceId();
+}
+
+function getDeviceId() {
+  if (inMemoryDeviceId) {
+    return inMemoryDeviceId;
+  }
+
+  try {
+    const storedDeviceId = window.localStorage.getItem(
+      DEVICE_ID_STORAGE_KEY
+    );
+
+    if (storedDeviceId) {
+      inMemoryDeviceId = storedDeviceId;
+      return storedDeviceId;
+    }
+  } catch (error) {
+    console.warn("Unable to read the attendance device ID from storage.", error);
+  }
+
+  inMemoryDeviceId = createDeviceId();
+
+  try {
+    window.localStorage.setItem(
+      DEVICE_ID_STORAGE_KEY,
+      inMemoryDeviceId
+    );
+  } catch (error) {
+    console.warn("Unable to persist the attendance device ID.", error);
+  }
+
+  return inMemoryDeviceId;
+}
+
 /**
  * Convert browser geolocation result into the
  * format expected by the FastAPI backend.
@@ -11,6 +93,7 @@ function createLocationPayload(position) {
     accuracy_m: position.coords.accuracy,
     geo_permission: "granted",
     client_reported_at: new Date().toISOString(),
+    device_id: getDeviceId(),
   };
 }
 
@@ -25,6 +108,7 @@ function createUnavailablePayload(permission) {
     accuracy_m: null,
     geo_permission: permission,
     client_reported_at: new Date().toISOString(),
+    device_id: getDeviceId(),
   };
 }
 

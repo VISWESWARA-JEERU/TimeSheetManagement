@@ -13,6 +13,8 @@ import {
 
 import { useAuth } from "../context/AuthContext";
 
+const PENDING_CHECKIN_KEY = "timesheet_pending_checkin";
+
 function LoginPage() {
   const location = useLocation();
 
@@ -133,7 +135,30 @@ function LoginPage() {
           ? `${window.location.origin}/today`
           : `${window.location.origin}${returnTo}`;
 
-      await loginWithIMS(returnUrl);
+      let pendingCheckinStored = false;
+      try {
+        window.sessionStorage.setItem(
+          PENDING_CHECKIN_KEY,
+          "true"
+        );
+        pendingCheckinStored = true;
+      } catch (error) {
+        console.error("Unable to store pending attendance check-in state:", error);
+      }
+
+      try {
+        await loginWithIMS(returnUrl);
+      } catch (error) {
+        if (pendingCheckinStored) {
+          try {
+            window.sessionStorage.removeItem(PENDING_CHECKIN_KEY);
+          } catch (storageError) {
+            console.error("Unable to clear pending attendance check-in state:", storageError);
+          }
+        }
+
+        throw error;
+      }
 
       /*
        * loginWithIMS redirects the browser to

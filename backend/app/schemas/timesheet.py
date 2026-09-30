@@ -127,7 +127,9 @@ class ApprovalOut(BaseModel):
     recording_coverage_percent: float = 0.0
 
     threshold_satisfied: bool = False
-    
+
+    variance_within_policy: bool
+    variance_threshold_minutes: int
 # =========================================================
 # WEEK SUMMARY
 # =========================================================

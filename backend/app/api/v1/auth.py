@@ -10,6 +10,7 @@ from app.core.database import get_db
 from app.core.exceptions import Unauthenticated
 from app.core.logging import get_logger
 from app.core.permissions import CurrentUser, permissions_for
+from app.models.enums import GeoPermission
 from app.schemas.auth import (
     AuthConfigResponse,
     DevLoginRequest,
@@ -17,7 +18,8 @@ from app.schemas.auth import (
     MeResponse,
     StartLoginResponse,
 )
-from app.services import auth_service
+from app.services import attendance_service, auth_service
+from app.services.attendance_service import LocationPayload
 
 log = get_logger("app.api.auth")
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -133,6 +135,28 @@ async def logout(
         pass
 
     if user is not None:
+        try:
+            async with db.begin_nested():
+                await attendance_service.check_out(
+                    db,
+                    user_id=user.id,
+                    payload=LocationPayload(
+                        latitude=None,
+                        longitude=None,
+                        accuracy_m=None,
+                        geo_permission=GeoPermission.unavailable,
+                        client_reported_at=None,
+                        device_id=None,
+                    ),
+                    ip=_client_ip(request),
+                    user_agent=request.headers.get("user-agent"),
+                )
+        except Exception:
+            log.exception(
+                "attendance_checkout_before_logout_failed",
+                user_id=str(user.id),
+            )
+
         sid = getattr(request.state, "session_id", None)
         if sid is not None:
             await auth_service.logout(db, user_id=user.id, session_id=sid, ip=_client_ip(request))

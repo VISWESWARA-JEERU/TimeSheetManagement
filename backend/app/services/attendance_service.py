@@ -19,7 +19,7 @@ from app.models.time_entry import TimeEntry
 from app.models.user import AppUser
 from app.models.work_session import WorkSession
 from app.services import audit_service, location_service, session_service
-from app.utils.timezone import work_date_for
+from app.utils.timezone import ensure_utc, work_date_for
 
 log = get_logger("app.attendance_service")
 
@@ -285,21 +285,25 @@ async def check_in(
         close_at = min(last_seen or cap, now)
         if close_at < existing.login_at:
             close_at = existing.login_at
-        await session_service.close_session(
+        await _close_work_session(
             db,
-            existing,
+            user=user,
+            org=org,
+            work_session=existing,
             logout_at=close_at,
             reason=LogoutReason.forced,
-            logout_event_id=None,
+            payload=LocationPayload(
+                latitude=None,
+                longitude=None,
+                accuracy_m=None,
+                geo_permission=GeoPermission.unavailable,
+                client_reported_at=None,
+                device_id=None,
+            ),
+            ip=ip,
+            user_agent=user_agent,
+            audit_action="attendance.forced_logout",
         )
-        # Recompute the old day's totals so totals stay consistent.
-        prev_day = await _get_attendance_day(
-            db, user.id, existing_work_date, for_update=True
-        )
-        if prev_day is not None:
-            await _recompute_totals(db, user=user, org=org, attendance=prev_day)
-            if prev_day.status == AttendanceStatus.open:
-                prev_day.status = AttendanceStatus.closed
 
     # Fresh login for this work_date.
     login_event = await _create_geo_event(
@@ -406,6 +410,91 @@ async def check_out(
             is_duplicate=True,
         )
 
+    return await _close_work_session(
+        db,
+        user=user,
+        org=org,
+        work_session=active,
+        logout_at=now,
+        reason=LogoutReason.user,
+        payload=payload,
+        ip=ip,
+        user_agent=user_agent,
+        audit_action="attendance.check_out",
+    )
+
+
+async def close_work_session_for_timeout(
+    db: AsyncSession,
+    *,
+    work_session_id: uuid.UUID,
+    logout_at: datetime,
+    ip: str | None = None,
+    user_agent: str | None = None,
+) -> bool:
+    """Close a stale work session and update its attendance day exactly once."""
+    session = (
+        await db.execute(
+            select(WorkSession).where(WorkSession.id == work_session_id)
+        )
+    ).scalar_one_or_none()
+    if session is None or session.logout_at is not None:
+        return False
+
+    user = await _load_user(db, session.user_id)
+    org = await _load_org(db, user.org_id)
+    await _acquire_user_lock(db, user.id)
+
+    session = (
+        await db.execute(
+            select(WorkSession)
+            .where(WorkSession.id == work_session_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if session is None or session.logout_at is not None:
+        return False
+
+    await _close_work_session(
+        db,
+        user=user,
+        org=org,
+        work_session=session,
+        logout_at=logout_at,
+        reason=LogoutReason.timeout,
+        payload=LocationPayload(
+            latitude=None,
+            longitude=None,
+            accuracy_m=None,
+            geo_permission=GeoPermission.unavailable,
+            client_reported_at=None,
+            device_id=None,
+        ),
+        ip=ip,
+        user_agent=user_agent,
+        audit_action="attendance.timeout",
+    )
+    return True
+
+
+async def _close_work_session(
+    db: AsyncSession,
+    *,
+    user: AppUser,
+    org: Organization,
+    work_session: WorkSession,
+    logout_at: datetime,
+    reason: LogoutReason,
+    payload: LocationPayload,
+    ip: str | None,
+    user_agent: str | None,
+    audit_action: str,
+) -> CheckOutResult:
+    occurred_at = max(
+        ensure_utc(work_session.login_at),
+        ensure_utc(logout_at),
+    )
     logout_event = await _create_geo_event(
         db,
         user=user,
@@ -413,46 +502,52 @@ async def check_out(
         payload=payload,
         ip=ip,
         user_agent=user_agent,
-        occurred_at=now,
+        occurred_at=occurred_at,
     )
 
     await session_service.close_session(
         db,
-        active,
-        logout_at=now,
-        reason=LogoutReason.user,
+        work_session,
+        logout_at=occurred_at,
+        reason=reason,
         logout_event_id=logout_event.id,
     )
 
     tz_name = _user_tz(user, org)
-    work_date = work_date_for(active.login_at, tz_name, org.workday_cutoff)
+    work_date = work_date_for(work_session.login_at, tz_name, org.workday_cutoff)
     attendance = await _get_attendance_day(db, user.id, work_date, for_update=True)
     if attendance is None:
         attendance = await _create_attendance_day(
             db,
             user_id=user.id,
             work_date=work_date,
-            first_login_at=active.login_at,
-            first_login_event_id=active.login_event_id,
+            first_login_at=work_session.login_at,
+            first_login_event_id=work_session.login_event_id,
         )
 
-    # last_logout_at = GREATEST(existing, now)
-    if attendance.last_logout_at is None or attendance.last_logout_at < now:
-        attendance.last_logout_at = now
+    if attendance.last_logout_at is None or attendance.last_logout_at < occurred_at:
+        attendance.last_logout_at = occurred_at
         attendance.last_logout_event_id = logout_event.id
 
     await _recompute_totals(db, user=user, org=org, attendance=attendance)
 
+    if (
+        reason in (LogoutReason.timeout, LogoutReason.forced)
+        and attendance.status == AttendanceStatus.open
+    ):
+        attendance.status = AttendanceStatus.closed
+
     await audit_service.record(
         db,
         actor_user_id=user.id,
-        action="attendance.check_out",
+        action=audit_action,
         entity="work_session",
-        entity_id=active.id,
+        entity_id=work_session.id,
         after={
-            "occurred_at": now.isoformat(),
-            "session_seconds": active.session_seconds,
-            "reason": LogoutReason.user.value,
+            "occurred_at": occurred_at.isoformat(),
+            "work_date": work_date.isoformat(),
+            "session_seconds": work_session.session_seconds,
+            "reason": reason.value,
             "geo_permission": payload.geo_permission.value,
         },
         ip=ip,
@@ -460,7 +555,7 @@ async def check_out(
 
     return CheckOutResult(
         attendance_day=attendance,
-        work_session=active,
+        work_session=work_session,
         logout_event=logout_event,
         is_duplicate=False,
     )
