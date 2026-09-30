@@ -171,6 +171,56 @@ export const adminService = {
   },
 
   // ==========================================
+  // ORGANIZATION SETTINGS
+  // ==========================================
+
+  getOrganization() {
+    return apiClient.get("/admin/organization");
+  },
+
+  updateOrganization(payload) {
+    return apiClient.patch("/admin/organization", payload);
+  },
+
+  // ==========================================
+  // WORK SITES
+  // ==========================================
+
+  listWorkSites() {
+    return apiClient.get("/admin/work-sites");
+  },
+
+  createWorkSite(payload) {
+    return apiClient.post("/admin/work-sites", payload);
+  },
+
+  updateWorkSite(siteId, payload) {
+    if (!siteId) {
+      throw new Error("Work site ID is required.");
+    }
+    return apiClient.patch(`/admin/work-sites/${siteId}`, payload);
+  },
+
+  deleteWorkSite(siteId) {
+    if (!siteId) {
+      throw new Error("Work site ID is required.");
+    }
+    return apiClient.delete(`/admin/work-sites/${siteId}`);
+  },
+
+  // ==========================================
+  // ORGANIZATION POLICY
+  // ==========================================
+
+  getPolicy() {
+    return apiClient.get("/admin/policy");
+  },
+
+  updatePolicy(payload) {
+    return apiClient.patch("/admin/policy", payload);
+  },
+
+  // ==========================================
   // AUDIT LOGS
   // ==========================================
 

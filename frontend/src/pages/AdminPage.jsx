@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   AlertCircle,
+  Building2,
   FileClock,
   Loader2,
+  MapPin,
   Plus,
   RefreshCw,
   Search,
   ShieldCheck,
+  SlidersHorizontal,
   Trash2,
   UserCog,
   Users,
@@ -17,6 +20,9 @@ import { adminService } from "../services/adminService";
 const TABS = {
   USERS: "users",
   TEAMS: "teams",
+  ORGANIZATION: "organization",
+  WORK_SITES: "work-sites",
+  POLICIES: "policies",
   AUDIT: "audit",
 };
 
@@ -34,18 +40,18 @@ function AdminPage() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
 
-  function showError(error) {
+  const showError = useCallback((error) => {
     setMessage("");
     setError(
       error?.message ||
         "Something went wrong. Please try again."
     );
-  }
+  }, []);
 
-  function showMessage(value) {
+  const showMessage = useCallback((value) => {
     setError("");
     setMessage(value);
-  }
+  }, []);
 
   return (
     <div className="mx-auto max-w-7xl space-y-6">
@@ -63,8 +69,8 @@ function AdminPage() {
           </h1>
 
           <p className="mt-1 text-sm text-slate-500">
-            Manage organization users, roles,
-            teams, and audit activity.
+            Manage users, teams, organization settings,
+            work sites, attendance policies, and audit activity.
           </p>
         </div>
       </section>
@@ -119,6 +125,48 @@ function AdminPage() {
 
           <TabButton
             active={
+              activeTab === TABS.ORGANIZATION
+            }
+            onClick={() => {
+              setActiveTab(TABS.ORGANIZATION);
+              setError("");
+              setMessage("");
+            }}
+            icon={Building2}
+          >
+            Organization
+          </TabButton>
+
+          <TabButton
+            active={
+              activeTab === TABS.WORK_SITES
+            }
+            onClick={() => {
+              setActiveTab(TABS.WORK_SITES);
+              setError("");
+              setMessage("");
+            }}
+            icon={MapPin}
+          >
+            Work Sites
+          </TabButton>
+
+          <TabButton
+            active={
+              activeTab === TABS.POLICIES
+            }
+            onClick={() => {
+              setActiveTab(TABS.POLICIES);
+              setError("");
+              setMessage("");
+            }}
+            icon={SlidersHorizontal}
+          >
+            Policies
+          </TabButton>
+
+          <TabButton
+            active={
               activeTab === TABS.AUDIT
             }
             onClick={() => {
@@ -147,6 +195,18 @@ function AdminPage() {
           showError={showError}
           showMessage={showMessage}
         />
+      )}
+
+      {activeTab === TABS.ORGANIZATION && (
+        <OrganizationTab showError={showError} showMessage={showMessage} />
+      )}
+
+      {activeTab === TABS.WORK_SITES && (
+        <WorkSitesTab showError={showError} showMessage={showMessage} />
+      )}
+
+      {activeTab === TABS.POLICIES && (
+        <PoliciesTab showError={showError} showMessage={showMessage} />
       )}
 
       {activeTab === TABS.AUDIT && (
@@ -810,6 +870,630 @@ function TeamsTab({
         endpoints in the next Admin UI increment.
       </div>
     </section>
+  );
+}
+
+/* ==========================================
+   ORGANIZATION SETTINGS
+========================================== */
+
+function OrganizationTab({ showError, showMessage }) {
+  const [settings, setSettings] = useState({
+    name: "",
+    default_timezone: "",
+    workday_cutoff: "",
+  });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const loadOrganization = useCallback(async () => {
+    try {
+      const result = await adminService.getOrganization();
+      setSettings({
+        name: result.name ?? "",
+        default_timezone: result.default_timezone ?? "",
+        workday_cutoff: result.workday_cutoff
+          ? result.workday_cutoff.slice(0, 5)
+          : "",
+      });
+    } catch (error) {
+      showError(error);
+    } finally {
+      setLoading(false);
+    }
+  }, [showError]);
+
+  useEffect(() => {
+    loadOrganization();
+  }, [loadOrganization]);
+
+  async function saveOrganization(event) {
+    event.preventDefault();
+    setSaving(true);
+    try {
+      const result = await adminService.updateOrganization({
+        name: settings.name.trim(),
+        default_timezone: settings.default_timezone.trim(),
+        workday_cutoff: settings.workday_cutoff || null,
+      });
+      setSettings({
+        name: result.name,
+        default_timezone: result.default_timezone,
+        workday_cutoff: result.workday_cutoff
+          ? result.workday_cutoff.slice(0, 5)
+          : "",
+      });
+      showMessage("Organization settings saved.");
+    } catch (error) {
+      showError(error);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading) {
+    return <LoadingRows />;
+  }
+
+  return (
+    <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="mb-5">
+        <h2 className="font-semibold text-slate-900">Organization Settings</h2>
+        <p className="mt-1 text-sm text-slate-500">
+          Configure the organization name, default timezone, and local workday boundary.
+        </p>
+      </div>
+      <form onSubmit={saveOrganization} className="max-w-2xl space-y-4">
+        <label className="block text-sm font-medium text-slate-700">
+          Organization Name
+          <input
+            required
+            maxLength={200}
+            value={settings.name}
+            onChange={(event) =>
+              setSettings((current) => ({ ...current, name: event.target.value }))
+            }
+            className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 font-normal"
+          />
+        </label>
+        <label className="block text-sm font-medium text-slate-700">
+          Default Timezone
+          <input
+            required
+            maxLength={100}
+            placeholder="Asia/Kolkata"
+            value={settings.default_timezone}
+            onChange={(event) =>
+              setSettings((current) => ({
+                ...current,
+                default_timezone: event.target.value,
+              }))
+            }
+            className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 font-normal"
+          />
+        </label>
+        <label className="block text-sm font-medium text-slate-700">
+          Workday Cutoff
+          <input
+            type="time"
+            value={settings.workday_cutoff}
+            onChange={(event) =>
+              setSettings((current) => ({
+                ...current,
+                workday_cutoff: event.target.value,
+              }))
+            }
+            className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 font-normal"
+          />
+          <span className="mt-1 block text-xs font-normal text-slate-500">
+            This is a local organization time and is not converted to UTC.
+          </span>
+        </label>
+        <button
+          type="submit"
+          disabled={saving || !settings.name.trim() || !settings.default_timezone.trim()}
+          className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {saving && <Loader2 size={16} className="animate-spin" />}
+          Save Changes
+        </button>
+      </form>
+    </section>
+  );
+}
+
+/* ==========================================
+   WORK SITES
+========================================== */
+
+const EMPTY_SITE_FORM = {
+  name: "",
+  latitude: "",
+  longitude: "",
+  radius_m: "",
+  is_active: true,
+};
+
+function WorkSitesTab({ showError, showMessage }) {
+  const [sites, setSites] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [formOpen, setFormOpen] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [form, setForm] = useState(EMPTY_SITE_FORM);
+  const [saving, setSaving] = useState(false);
+  const [workingSiteId, setWorkingSiteId] = useState(null);
+
+  const loadSites = useCallback(async () => {
+    try {
+      const result = await adminService.listWorkSites();
+      setSites(Array.isArray(result) ? result : []);
+    } catch (error) {
+      showError(error);
+    } finally {
+      setLoading(false);
+    }
+  }, [showError]);
+
+  useEffect(() => {
+    loadSites();
+  }, [loadSites]);
+
+  function openCreateForm() {
+    setEditingId(null);
+    setForm(EMPTY_SITE_FORM);
+    setFormOpen(true);
+  }
+
+  function editSite(site) {
+    setEditingId(site.id);
+    setForm({
+      name: site.name,
+      latitude: String(site.latitude),
+      longitude: String(site.longitude),
+      radius_m: String(site.radius_m),
+      is_active: site.is_active,
+    });
+    setFormOpen(true);
+  }
+
+  async function saveSite(event) {
+    event.preventDefault();
+    const name = form.name.trim();
+    const latitude = form.latitude.trim() ? Number(form.latitude) : NaN;
+    const longitude = form.longitude.trim() ? Number(form.longitude) : NaN;
+    const radius = form.radius_m.trim() ? Number(form.radius_m) : NaN;
+    if (
+      !name ||
+      !Number.isFinite(latitude) ||
+      latitude < -90 ||
+      latitude > 90 ||
+      !Number.isFinite(longitude) ||
+      longitude < -180 ||
+      longitude > 180 ||
+      !Number.isFinite(radius) ||
+      radius <= 0 ||
+      radius > 100_000
+    ) {
+      showError(new Error("Enter a site name, valid coordinates, and a radius greater than 0 and no more than 100,000 meters."));
+      return;
+    }
+
+    setSaving(true);
+    const payload = {
+      name,
+      latitude,
+      longitude,
+      radius_m: radius,
+      is_active: form.is_active,
+    };
+    try {
+      if (editingId) {
+        await adminService.updateWorkSite(editingId, payload);
+        showMessage(`Work site "${name}" updated.`);
+      } else {
+        await adminService.createWorkSite(payload);
+        showMessage(`Work site "${name}" created.`);
+      }
+      setFormOpen(false);
+      setEditingId(null);
+      setForm(EMPTY_SITE_FORM);
+      await loadSites();
+    } catch (error) {
+      showError(error);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function toggleSite(site) {
+    setWorkingSiteId(site.id);
+    try {
+      await adminService.updateWorkSite(site.id, {
+        is_active: !site.is_active,
+      });
+      showMessage(`Work site "${site.name}" ${site.is_active ? "disabled" : "enabled"}.`);
+      await loadSites();
+    } catch (error) {
+      showError(error);
+    } finally {
+      setWorkingSiteId(null);
+    }
+  }
+
+  async function deleteSite(site) {
+    const confirmed = window.confirm(
+      `Delete "${site.name}"? Historical geo events will remain, but their work-site reference will be cleared.`
+    );
+    if (!confirmed) {
+      return;
+    }
+    setWorkingSiteId(site.id);
+    try {
+      await adminService.deleteWorkSite(site.id);
+      showMessage(`Work site "${site.name}" deleted.`);
+      await loadSites();
+    } catch (error) {
+      showError(error);
+    } finally {
+      setWorkingSiteId(null);
+    }
+  }
+
+  return (
+    <section className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="font-semibold text-slate-900">Work Sites</h2>
+          <p className="mt-1 text-sm text-slate-500">
+            Configure organization geofence locations for attendance.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={openCreateForm}
+          className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700"
+        >
+          <Plus size={16} />
+          Add Work Site
+        </button>
+      </div>
+
+      {formOpen && (
+        <form onSubmit={saveSite} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+          <h3 className="mb-4 font-semibold text-slate-900">
+            {editingId ? "Edit Work Site" : "Add Work Site"}
+          </h3>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label className="text-sm font-medium text-slate-700 sm:col-span-2">
+              Site Name
+              <input
+                required
+                maxLength={200}
+                value={form.name}
+                onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
+                className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 font-normal"
+              />
+            </label>
+            <label className="text-sm font-medium text-slate-700">
+              Latitude
+              <input
+                required
+                type="number"
+                step="any"
+                min="-90"
+                max="90"
+                value={form.latitude}
+                onChange={(event) => setForm((current) => ({ ...current, latitude: event.target.value }))}
+                className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 font-normal"
+              />
+            </label>
+            <label className="text-sm font-medium text-slate-700">
+              Longitude
+              <input
+                required
+                type="number"
+                step="any"
+                min="-180"
+                max="180"
+                value={form.longitude}
+                onChange={(event) => setForm((current) => ({ ...current, longitude: event.target.value }))}
+                className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 font-normal"
+              />
+            </label>
+            <label className="text-sm font-medium text-slate-700">
+              Radius (meters)
+              <input
+                required
+                type="number"
+                step="any"
+                min="0.01"
+                max="100000"
+                value={form.radius_m}
+                onChange={(event) => setForm((current) => ({ ...current, radius_m: event.target.value }))}
+                className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 font-normal"
+              />
+            </label>
+            <label className="flex items-center gap-2 self-end pb-3 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={form.is_active}
+                onChange={(event) => setForm((current) => ({ ...current, is_active: event.target.checked }))}
+                className="h-4 w-4 rounded border-slate-300 text-indigo-600"
+              />
+              Active
+            </label>
+          </div>
+          <div className="mt-5 flex gap-2">
+            <button
+              type="submit"
+              disabled={saving}
+              className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+            >
+              {saving && <Loader2 size={16} className="animate-spin" />}
+              {editingId ? "Save Work Site" : "Create Work Site"}
+            </button>
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() => {
+                setFormOpen(false);
+                setEditingId(null);
+              }}
+              className="rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+
+      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        {loading ? (
+          <LoadingRows />
+        ) : sites.length === 0 ? (
+          <div className="p-5">
+            <EmptySection
+              icon={MapPin}
+              title="No work sites configured"
+              description="Work sites define the geofence locations used for attendance. Add a work site to get started."
+            />
+          </div>
+        ) : (
+          <div className="divide-y divide-slate-100">
+            {sites.map((site) => (
+              <div key={site.id} className="flex flex-col justify-between gap-4 p-5 md:flex-row md:items-center">
+                <div className="flex min-w-0 items-start gap-3">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-indigo-50 text-indigo-600">
+                    <MapPin size={19} />
+                  </div>
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="font-semibold text-slate-900">{site.name}</h3>
+                      <StatusBadge status={site.is_active ? "active" : "inactive"} />
+                    </div>
+                    <p className="mt-1 text-sm text-slate-500">
+                      {Number(site.latitude).toFixed(6)}, {Number(site.longitude).toFixed(6)} · Radius {Number(site.radius_m)} m
+                    </p>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={workingSiteId === site.id}
+                    onClick={() => editSite(site)}
+                    className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    disabled={workingSiteId === site.id}
+                    onClick={() => toggleSite(site)}
+                    className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    {workingSiteId === site.id ? "Saving…" : site.is_active ? "Disable" : "Enable"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={workingSiteId === site.id}
+                    onClick={() => deleteSite(site)}
+                    className="rounded-lg border border-red-200 px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
+                  >
+                    {workingSiteId === site.id ? "Deleting…" : "Delete"}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+/* ==========================================
+   ORGANIZATION POLICIES
+========================================== */
+
+function PoliciesTab({ showError, showMessage }) {
+  const [policy, setPolicy] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const loadPolicy = useCallback(async () => {
+    try {
+      const result = await adminService.getPolicy();
+      setPolicy({
+        workday_hours: String(result.workday_hours),
+        variance_threshold_minutes: String(result.variance_threshold_minutes),
+        auto_logout_minutes: String(result.auto_logout_minutes),
+        allow_login_without_location: result.allow_login_without_location,
+        location_retention_days: String(result.location_retention_days),
+      });
+    } catch (error) {
+      showError(error);
+    } finally {
+      setLoading(false);
+    }
+  }, [showError]);
+
+  useEffect(() => {
+    loadPolicy();
+  }, [loadPolicy]);
+
+  async function savePolicy(event) {
+    event.preventDefault();
+    if (
+      !policy.workday_hours.trim() ||
+      !policy.variance_threshold_minutes.trim() ||
+      !policy.auto_logout_minutes.trim() ||
+      !policy.location_retention_days.trim()
+    ) {
+      showError(new Error("All numeric policy fields are required."));
+      return;
+    }
+    const workdayHours = Number(policy.workday_hours);
+    const variance = Number(policy.variance_threshold_minutes);
+    const autoLogout = Number(policy.auto_logout_minutes);
+    const retention = Number(policy.location_retention_days);
+    if (
+      !Number.isInteger(workdayHours) ||
+      workdayHours < 1 ||
+      workdayHours > 24 ||
+      !Number.isInteger(variance) ||
+      variance < 0 ||
+      variance > 1440 ||
+      !Number.isInteger(autoLogout) ||
+      autoLogout <= 0 ||
+      !Number.isInteger(retention) ||
+      retention < 0
+    ) {
+      showError(new Error("Enter valid policy values. Workday hours must be 1–24, variance 0–1,440 minutes, automatic logout greater than 0, and retention 0 or more days."));
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const result = await adminService.updatePolicy({
+        workday_hours: workdayHours,
+        variance_threshold_minutes: variance,
+        auto_logout_minutes: autoLogout,
+        allow_login_without_location: policy.allow_login_without_location,
+        location_retention_days: retention,
+      });
+      setPolicy({
+        workday_hours: String(result.workday_hours),
+        variance_threshold_minutes: String(result.variance_threshold_minutes),
+        auto_logout_minutes: String(result.auto_logout_minutes),
+        allow_login_without_location: result.allow_login_without_location,
+        location_retention_days: String(result.location_retention_days),
+      });
+      showMessage("Attendance policy saved.");
+    } catch (error) {
+      showError(error);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading) {
+    return <LoadingRows />;
+  }
+  if (!policy) {
+    return null;
+  }
+
+  return (
+    <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="mb-5">
+        <h2 className="font-semibold text-slate-900">Attendance Policies</h2>
+        <p className="mt-1 text-sm text-slate-500">
+          Configure attendance thresholds and session policy for this organization.
+        </p>
+      </div>
+      <form onSubmit={savePolicy} className="max-w-3xl space-y-5">
+        <PolicyNumberField
+          label="Workday Hours"
+          help="Expected daily work duration used for attendance/report comparison."
+          value={policy.workday_hours}
+          min={1}
+          max={24}
+          onChange={(value) => setPolicy((current) => ({ ...current, workday_hours: value }))}
+        />
+        <PolicyNumberField
+          label="Allowed Attendance Variance (minutes)"
+          help="Difference between attendance time and recorded timesheet time before a warning is raised."
+          value={policy.variance_threshold_minutes}
+          min={0}
+          max={1440}
+          onChange={(value) =>
+            setPolicy((current) => ({ ...current, variance_threshold_minutes: value }))
+          }
+        />
+        <PolicyNumberField
+          label="Automatic Logout (minutes)"
+          help="Inactive work sessions older than this threshold may be closed automatically."
+          value={policy.auto_logout_minutes}
+          min={1}
+          onChange={(value) => setPolicy((current) => ({ ...current, auto_logout_minutes: value }))}
+        />
+        <label className="flex items-start gap-3 text-sm text-slate-700">
+          <input
+            type="checkbox"
+            checked={policy.allow_login_without_location}
+            onChange={(event) =>
+              setPolicy((current) => ({
+                ...current,
+                allow_login_without_location: event.target.checked,
+              }))
+            }
+            className="mt-0.5 h-4 w-4 rounded border-slate-300 text-indigo-600"
+          />
+          <span>
+            <span className="font-medium">Allow Login Without Location</span>
+            <span className="mt-1 block text-xs text-slate-500">
+              When enabled, location denial or unavailability does not prevent attendance check-in.
+            </span>
+          </span>
+        </label>
+        <PolicyNumberField
+          label="Location Retention (days)"
+          help="Configured period for retaining location-related attendance information. This setting does not currently run a deletion job."
+          value={policy.location_retention_days}
+          min={0}
+          onChange={(value) =>
+            setPolicy((current) => ({ ...current, location_retention_days: value }))
+          }
+        />
+        <button
+          type="submit"
+          disabled={saving}
+          className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {saving && <Loader2 size={16} className="animate-spin" />}
+          Save Policy
+        </button>
+      </form>
+    </section>
+  );
+}
+
+function PolicyNumberField({ label, help, value, min, max, onChange }) {
+  return (
+    <label className="block text-sm font-medium text-slate-700">
+      {label}
+      <input
+        required
+        type="number"
+        min={min}
+        max={max}
+        step="1"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="mt-1.5 block w-full max-w-xs rounded-lg border border-slate-300 px-3 py-2.5"
+      />
+      <span className="mt-1 block text-xs font-normal text-slate-500">{help}</span>
+    </label>
   );
 }
 
