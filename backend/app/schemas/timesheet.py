@@ -5,7 +5,7 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.models.enums import TimesheetStatus
+from app.models.enums import AttendanceStatus, TimesheetStatus
 
 
 # =========================================================
@@ -134,6 +134,16 @@ class ApprovalOut(BaseModel):
 # WEEK SUMMARY
 # =========================================================
 
+class TimesheetDaySummary(BaseModel):
+    work_date: date
+    logged_minutes: int = 0
+    attendance_seconds: int = 0
+    variance_minutes: int = 0
+    first_login_at: datetime | None = None
+    last_logout_at: datetime | None = None
+    attendance_status: AttendanceStatus | None = None
+
+
 class TimesheetWeekSummary(BaseModel):
     period: TimesheetPeriodOut | None = None
 
@@ -142,5 +152,7 @@ class TimesheetWeekSummary(BaseModel):
 
     total_minutes: int = 0
     entry_count: int = 0
+    attendance_total_seconds: int = 0
+    days: list[TimesheetDaySummary] = Field(default_factory=list)
 
     status: TimesheetStatus = TimesheetStatus.draft

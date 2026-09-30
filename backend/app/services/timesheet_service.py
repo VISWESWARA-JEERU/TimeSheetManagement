@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import (
@@ -15,6 +15,7 @@ from app.models.enums import (
     TimeEntryStatus,
     TimesheetStatus,
 )
+from app.models.attendance_day import AttendanceDay
 from app.models.time_entry import TimeEntry
 from app.models.timesheet_period import TimesheetPeriod
 
@@ -238,60 +239,6 @@ async def list_period_entries(
 
 
 # =========================================================
-# WEEK TOTAL
-# =========================================================
-
-
-async def get_period_totals(
-    db: AsyncSession,
-    *,
-    user_id: uuid.UUID,
-    period_start: date,
-    period_end: date,
-) -> tuple[int, int]:
-    """
-    Return:
-
-    total_minutes
-    entry_count
-    """
-
-    stmt = select(
-        func.coalesce(
-            func.sum(
-                TimeEntry.duration_minutes
-            ),
-            0,
-        ),
-        func.count(
-            TimeEntry.id
-        ),
-    ).where(
-        TimeEntry.user_id
-        == user_id,
-
-        TimeEntry.work_date
-        >= period_start,
-
-        TimeEntry.work_date
-        <= period_end,
-    )
-
-    result = await db.execute(
-        stmt
-    )
-
-    total_minutes, entry_count = (
-        result.one()
-    )
-
-    return (
-        int(total_minutes or 0),
-        int(entry_count or 0),
-    )
-
-
-# =========================================================
 # GET WEEK SUMMARY
 # =========================================================
 
@@ -322,15 +269,73 @@ async def get_week_summary(
         period_end=period_end,
     )
 
-    (
-        total_minutes,
-        entry_count,
-    ) = await get_period_totals(
-        db,
-        user_id=user_id,
-        period_start=period_start,
-        period_end=period_end,
-    )
+    daily_entry_rows = (
+        await db.execute(
+            select(
+                TimeEntry.work_date,
+                func.coalesce(func.sum(TimeEntry.duration_minutes), 0),
+                func.count(TimeEntry.id),
+            )
+            .where(
+                TimeEntry.user_id == user_id,
+                TimeEntry.work_date >= period_start,
+                TimeEntry.work_date <= period_end,
+            )
+            .group_by(TimeEntry.work_date)
+        )
+    ).all()
+    logged_by_date = {
+        work_date: (int(minutes or 0), int(count or 0))
+        for work_date, minutes, count in daily_entry_rows
+    }
+
+    attendance_rows = (
+        await db.execute(
+            select(AttendanceDay).where(
+                AttendanceDay.user_id == user_id,
+                AttendanceDay.work_date >= period_start,
+                AttendanceDay.work_date <= period_end,
+            )
+        )
+    ).scalars().all()
+    attendance_by_date = {
+        attendance.work_date: attendance for attendance in attendance_rows
+    }
+
+    daily_summaries: list[dict] = []
+    total_minutes = 0
+    entry_count = 0
+    attendance_total_seconds = 0
+    work_date = period_start
+    while work_date <= period_end:
+        logged_minutes, day_entry_count = logged_by_date.get(work_date, (0, 0))
+        attendance = attendance_by_date.get(work_date)
+        attendance_seconds = (
+            int(attendance.total_session_seconds) if attendance is not None else 0
+        )
+        attendance_minutes = attendance_seconds // 60
+
+        daily_summaries.append(
+            {
+                "work_date": work_date,
+                "logged_minutes": logged_minutes,
+                "attendance_seconds": attendance_seconds,
+                "variance_minutes": logged_minutes - attendance_minutes,
+                "first_login_at": (
+                    attendance.first_login_at if attendance is not None else None
+                ),
+                "last_logout_at": (
+                    attendance.last_logout_at if attendance is not None else None
+                ),
+                "attendance_status": (
+                    attendance.status if attendance is not None else None
+                ),
+            }
+        )
+        total_minutes += logged_minutes
+        entry_count += day_entry_count
+        attendance_total_seconds += attendance_seconds
+        work_date += timedelta(days=1)
 
     status = (
         period.status
@@ -348,6 +353,10 @@ async def get_week_summary(
             total_minutes,
         "entry_count":
             entry_count,
+        "attendance_total_seconds":
+            attendance_total_seconds,
+        "days":
+            daily_summaries,
         "status":
             status,
     }

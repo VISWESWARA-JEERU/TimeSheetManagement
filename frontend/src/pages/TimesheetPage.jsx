@@ -13,6 +13,7 @@ import {
   ChevronRight,
   Clock,
   Edit3,
+  FileDown,
   Plus,
   RefreshCw,
   Trash2,
@@ -98,6 +99,8 @@ function TimesheetPage() {
     weekCanBeEdited &&
     weekIsFinished &&
     entries.length > 0;
+  const defaultEntryDate = getDefaultEntryDate(weekStart, weekEnd);
+  const selectedWeekIsFuture = weekStart > getTodayStart();
 
 
   // =====================================================
@@ -113,6 +116,72 @@ function TimesheetPage() {
     );
   }, [projects]);
 
+  const gridData = useMemo(() => {
+    const rowsByKey = new Map();
+
+    for (const entry of entries) {
+      const projectId = entry.project_id;
+      const taskSnapshot = entry.task_title_snapshot?.trim() || "";
+      const taskKey = entry.task_id
+        ? `task:${entry.task_id}`
+        : `snapshot:${taskSnapshot || "general"}`;
+      const key = `${projectId}:${taskKey}`;
+      let row = rowsByKey.get(key);
+
+      if (!row) {
+        row = {
+          key,
+          projectId,
+          taskId: entry.task_id,
+          projectName: projectMap.get(projectId)?.name || "Project",
+          taskTitle: taskSnapshot || "General",
+          dailyMinutes: {},
+          totalMinutes: 0,
+        };
+        rowsByKey.set(key, row);
+      } else if (!row.taskTitle && taskSnapshot) {
+        row.taskTitle = taskSnapshot;
+      }
+
+      const date = entry.work_date;
+      const minutes = Number(entry.duration_minutes) || 0;
+      row.dailyMinutes[date] = (row.dailyMinutes[date] || 0) + minutes;
+      row.totalMinutes += minutes;
+    }
+
+    const totals = Object.fromEntries(
+      weekDays.map((day) => [formatDateInput(day), 0])
+    );
+    for (const entry of entries) {
+      if (Object.hasOwn(totals, entry.work_date)) {
+        totals[entry.work_date] += Number(entry.duration_minutes) || 0;
+      }
+    }
+    const rows = [...rowsByKey.values()].sort(
+      (left, right) =>
+        left.projectName.localeCompare(right.projectName) ||
+        left.taskTitle.localeCompare(right.taskTitle)
+    );
+
+    return { rows, dailyLoggedMinutes: totals };
+  }, [entries, projectMap, weekDays]);
+
+  const { rows: gridRows, dailyLoggedMinutes } = gridData;
+
+  const attendanceByDate = useMemo(
+    () =>
+      new Map(
+        (weekSummary?.days || []).map((day) => [day.work_date, day])
+      ),
+    [weekSummary]
+  );
+
+  const weeklyAttendanceSeconds =
+    weekSummary?.attendance_total_seconds ??
+    (weekSummary?.days || []).reduce(
+      (total, day) => total + (Number(day.attendance_seconds) || 0),
+      0
+    );
 
   // =====================================================
   // LOAD TIMESHEET
@@ -384,6 +453,52 @@ function TimesheetPage() {
         requestError.message ||
           "Unable to delete time entry."
       );
+    }
+  }
+
+  function handleExportCsv() {
+    try {
+      const headers = [
+        "Date",
+        "Project",
+        "Task",
+        "Description",
+        "Duration Minutes",
+        "Duration",
+        "Billable",
+        "Status",
+        "Code Links",
+      ];
+      const rows = entries.map((entry) => [
+        entry.work_date,
+        projectMap.get(entry.project_id)?.name || "Project",
+        entry.task_title_snapshot || "General",
+        entry.description || "",
+        entry.duration_minutes,
+        formatMinutes(entry.duration_minutes),
+        entry.billable ? "true" : "false",
+        entry.status || "",
+        (entry.code_links || []).map((link) => link.url).join("; "),
+      ]);
+      const csv = [headers, ...rows]
+        .map((row) => row.map(escapeCsvValue).join(","))
+        .join("\r\n");
+      const blob = new Blob(["\uFEFF", csv], {
+        type: "text/csv;charset=utf-8",
+      });
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = `timesheet-${formatDateInput(
+        weekStart
+      )}-to-${formatDateInput(weekEnd)}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+    } catch (exportError) {
+      console.error("Failed to export timesheet CSV:", exportError);
+      setError("Unable to export the timesheet CSV.");
     }
   }
 
@@ -659,77 +774,51 @@ function TimesheetPage() {
             </button>
 
 
-            {weekCanBeEdited && (
+            <button
+              type="button"
+              onClick={() => openCreateForm(defaultEntryDate)}
+              disabled={!weekCanBeEdited || selectedWeekIsFuture}
+              className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Plus size={17} />
+              Add Time Entry
+            </button>
 
-              <button
-                type="button"
-                onClick={() =>
-                  openCreateForm(
-                    new Date()
-                  )
-                }
-                disabled={
-                  !isDateInsideWeek(
-                    new Date(),
-                    weekStart,
-                    weekEnd
-                  )
-                }
-                className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
-              >
+            <button
+              type="button"
+              onClick={handleExportCsv}
+              className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+            >
+              <FileDown size={17} />
+              Export CSV
+            </button>
 
-                <Plus size={17} />
-
-                Add entry
-
-              </button>
-
-            )}
-
-
-            {weekCanBeEdited && (
-
-              <button
-                type="button"
-                onClick={handleSubmitWeek}
-                disabled={
-                  submitting ||
-                  !weekCanBeSubmitted
-                }
-                className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
-                title={
-                  !weekIsFinished
+            <button
+              type="button"
+              onClick={handleSubmitWeek}
+              disabled={!weekCanBeEdited || submitting || !weekCanBeSubmitted}
+              className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+              title={
+                !weekCanBeEdited
+                  ? "This timesheet is locked"
+                  : !weekIsFinished
                     ? "The week must end before it can be submitted"
                     : entries.length === 0
                       ? "Add at least one time entry before submitting"
                       : "Submit this week for manager approval"
-                }
-              >
-
-                {submitting ? (
-
-                  <RefreshCw
-                    size={17}
-                    className="animate-spin"
-                  />
-
-                ) : (
-
-                  <Check size={17} />
-
-                )}
-
-                {submitting
-                  ? "Submitting..."
-                  : weekStatus === "rejected"
-                    ? "Resubmit Week"
-                    : weekIsFinished
-                      ? "Submit Week"
-                      : "Week in progress"}
-
-              </button>
-
-            )}
+              }
+            >
+              {submitting ? (
+                <RefreshCw size={17} className="animate-spin" />
+              ) : (
+                <Check size={17} />
+              )}
+              {submitting
+                ? "Submitting..."
+                : weekStatus === "rejected"
+                  ? "Resubmit Week"
+                  : "Submit Week"}
+            </button>
 
           </div>
 
@@ -742,7 +831,7 @@ function TimesheetPage() {
           SUMMARY
       ========================================== */}
 
-      <section className="grid gap-4 sm:grid-cols-3">
+      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
 
         {/* LOGGED TIME */}
 
@@ -760,17 +849,14 @@ function TimesheetPage() {
             />
 
             <p className="text-2xl font-bold text-slate-900">
-
               {formatMinutes(
-                totalWeekMinutes
+                weekSummary?.total_minutes ?? totalWeekMinutes
               )}
-
             </p>
 
           </div>
 
         </div>
-
 
         {/* ENTRY COUNT */}
 
@@ -781,7 +867,7 @@ function TimesheetPage() {
           </p>
 
           <p className="mt-2 text-2xl font-bold text-slate-900">
-            {entries.length}
+            {weekSummary?.entry_count ?? entries.length}
           </p>
 
         </div>
@@ -833,68 +919,69 @@ function TimesheetPage() {
 
       </section>
 
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <p className="text-sm font-medium text-slate-500">
+          Weekly attendance
+        </p>
+        <div className="mt-2 flex items-center gap-2">
+          <Clock size={22} className="text-emerald-600" />
+          <p className="text-2xl font-bold text-slate-900">
+            {formatMinutes(Math.floor(weeklyAttendanceSeconds / 60))}
+          </p>
+        </div>
+      </section>
 
-      {/* ==========================================
-          DAYS
-      ========================================== */}
 
       {loading ? (
-
         <TimesheetSkeleton />
-
       ) : (
+        <>
+          <WeeklyGrid
+            weekDays={weekDays}
+            rows={gridRows}
+            dailyLoggedMinutes={dailyLoggedMinutes}
+            attendanceByDate={attendanceByDate}
+          />
 
-        <section className="space-y-4">
-
-          {weekDays.map((day) => {
-
-            const dateString =
-              formatDateInput(
-                day
-              );
-
-            const dayEntries =
-              entries.filter(
-                (entry) =>
-                  entry.work_date ===
-                  dateString
-              );
-
-            const dayTotal =
-              dayEntries.reduce(
-                (total, entry) =>
-                  total +
-                  Number(
-                    entry.duration_minutes ||
-                      0
-                  ),
-                0
-              );
-
-            return (
-
-              <DaySection
-                key={dateString}
-                day={day}
-                entries={dayEntries}
-                totalMinutes={dayTotal}
-                projectMap={projectMap}
-                weekStatus={weekStatus}
-                onAdd={() =>
-                  openCreateForm(
-                    day
-                  )
-                }
-                onEdit={openEditForm}
-                onDelete={handleDelete}
-              />
-
-            );
-
-          })}
-
-        </section>
-
+          <details className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <summary className="cursor-pointer px-5 py-4 font-semibold text-slate-900">
+              Weekly Entries ({entries.length})
+              <span className="ml-2 text-sm font-normal text-slate-500">
+                Edit or delete individual time entries
+              </span>
+            </summary>
+            {entries.length === 0 ? (
+              <div className="border-t border-slate-100 p-5">
+                <EmptyState
+                  title="No time entries for this week"
+                  description="Add time to see project and task rows in the weekly grid."
+                />
+              </div>
+            ) : (
+              <div className="space-y-4 border-t border-slate-100 p-4">
+                {weekDays.map((day) => {
+                  const dateString = formatDateInput(day);
+                  const dayEntries = entries.filter(
+                    (entry) => entry.work_date === dateString
+                  );
+                  return (
+                    <DaySection
+                      key={dateString}
+                      day={day}
+                      entries={dayEntries}
+                      totalMinutes={dailyLoggedMinutes[dateString] || 0}
+                      projectMap={projectMap}
+                      weekStatus={weekStatus}
+                      onAdd={() => openCreateForm(day)}
+                      onEdit={openEditForm}
+                      onDelete={handleDelete}
+                    />
+                  );
+                })}
+              </div>
+            )}
+          </details>
+        </>
       )}
 
 
@@ -914,6 +1001,200 @@ function TimesheetPage() {
       )}
 
     </div>
+  );
+}
+
+function WeeklyGrid({
+  weekDays,
+  rows,
+  dailyLoggedMinutes,
+  attendanceByDate,
+}) {
+  return (
+    <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div className="border-b border-slate-200 px-5 py-4">
+        <h2 className="font-semibold text-slate-900">
+          Project and task breakdown
+        </h2>
+        <p className="mt-1 text-xs text-slate-500">
+          Durations are aggregated for display; individual time entries remain
+          available below.
+        </p>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[1050px]">
+          <thead className="bg-slate-50">
+            <tr>
+              <th className="sticky left-0 z-10 min-w-56 bg-slate-50 px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Project / Task
+              </th>
+              {weekDays.map((day) => (
+                <th
+                  key={formatDateInput(day)}
+                  className="min-w-24 px-3 py-3 text-center text-xs font-semibold uppercase tracking-wide text-slate-500"
+                >
+                  {new Intl.DateTimeFormat(undefined, {
+                    weekday: "short",
+                  }).format(day)}
+                  <span className="mt-1 block font-normal normal-case">
+                    {new Intl.DateTimeFormat(undefined, {
+                      month: "short",
+                      day: "numeric",
+                    }).format(day)}
+                  </span>
+                </th>
+              ))}
+              <th className="min-w-24 px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Total
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 ? (
+              <tr>
+                <td
+                  colSpan={9}
+                  className="border-t border-slate-100 px-5 py-8 text-center text-sm text-slate-500"
+                >
+                  No time entries for this week.
+                </td>
+              </tr>
+            ) : (
+              rows.map((row) => (
+                <tr
+                  key={row.key}
+                  className="border-t border-slate-100 hover:bg-slate-50/70"
+                >
+                  <th className="sticky left-0 z-10 bg-white px-5 py-3 text-left">
+                    <span className="block text-sm font-semibold text-slate-800">
+                      {row.projectName}
+                    </span>
+                    <span className="mt-0.5 block text-xs font-normal text-slate-500">
+                      {row.taskTitle}
+                    </span>
+                  </th>
+                  {weekDays.map((day) => {
+                    const date = formatDateInput(day);
+                    const minutes = row.dailyMinutes[date] || 0;
+                    return (
+                      <td
+                        key={date}
+                        className="px-3 py-3 text-center text-sm text-slate-600"
+                      >
+                        {minutes ? formatMinutes(minutes) : "—"}
+                      </td>
+                    );
+                  })}
+                  <td className="px-4 py-3 text-right text-sm font-semibold text-slate-800">
+                    {formatMinutes(row.totalMinutes)}
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+          <tfoot className="border-t-2 border-slate-200 bg-slate-50">
+            <SummaryGridRow
+              label="Daily Logged"
+              weekDays={weekDays}
+              values={dailyLoggedMinutes}
+              formatValue={(minutes) => formatMinutes(minutes)}
+              emphasized
+            />
+            <SummaryGridRow
+              label="Attendance"
+              weekDays={weekDays}
+              values={Object.fromEntries(
+                weekDays.map((day) => {
+                  const date = formatDateInput(day);
+                  return [
+                    date,
+                    Math.floor(
+                      (attendanceByDate.get(date)?.attendance_seconds || 0) / 60
+                    ),
+                  ];
+                })
+              )}
+              formatValue={(minutes) => formatMinutes(minutes)}
+            />
+            <SummaryGridRow
+              label="Variance"
+              weekDays={weekDays}
+              values={Object.fromEntries(
+                weekDays.map((day) => {
+                  const date = formatDateInput(day);
+                  const attendanceMinutes = Math.floor(
+                    (attendanceByDate.get(date)?.attendance_seconds || 0) / 60
+                  );
+                  return [
+                    date,
+                    (dailyLoggedMinutes[date] || 0) - attendanceMinutes,
+                  ];
+                })
+              )}
+              formatValue={formatSignedMinutes}
+            />
+          </tfoot>
+        </table>
+      </div>
+
+      <div className="grid gap-3 border-t border-slate-200 bg-white p-4 sm:grid-cols-2 lg:grid-cols-4">
+        {weekDays.map((day) => {
+          const date = formatDateInput(day);
+          const summary = attendanceByDate.get(date);
+          return (
+            <div
+              key={date}
+              className="rounded-lg border border-slate-100 bg-slate-50/70 px-3 py-2"
+            >
+              <p className="text-xs font-semibold text-slate-700">
+                {formatDay(day)}
+              </p>
+              <p className="mt-1 text-xs text-slate-500">
+                First login: {formatTime(summary?.first_login_at)}
+              </p>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Last logout: {formatTime(summary?.last_logout_at)}
+              </p>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function SummaryGridRow({
+  label,
+  weekDays,
+  values,
+  formatValue,
+  emphasized = false,
+}) {
+  return (
+    <tr>
+      <th
+        className={`sticky left-0 z-10 bg-slate-50 px-5 py-3 text-left text-sm ${
+          emphasized ? "font-bold text-slate-900" : "font-semibold text-slate-600"
+        }`}
+      >
+        {label}
+      </th>
+      {weekDays.map((day) => {
+        const date = formatDateInput(day);
+        return (
+          <td
+            key={date}
+            className={`px-3 py-3 text-center text-sm ${
+              emphasized ? "font-bold text-slate-900" : "text-slate-600"
+            }`}
+          >
+            {formatValue(values[date] || 0)}
+          </td>
+        );
+      })}
+      <td className="px-4 py-3" />
+    </tr>
   );
 }
 
@@ -938,28 +1219,8 @@ function DaySection({
       new Date()
     );
 
-  const todayDate =
-    new Date();
-
-  todayDate.setHours(
-    0,
-    0,
-    0,
-    0
-  );
-
-  const dayDate =
-    new Date(day);
-
-  dayDate.setHours(
-    0,
-    0,
-    0,
-    0
-  );
-
   const isFutureDay =
-    dayDate > todayDate;
+    formatDateInput(day) > formatDateInput(new Date());
 
 
   const weekEditable =
@@ -1137,40 +1398,25 @@ function DaySection({
                   </p>
 
 
-                  {canEdit && (
+                  <button
+                    type="button"
+                    onClick={() => onEdit(entry)}
+                    disabled={!canEdit}
+                    className="rounded-lg border border-slate-200 p-2 text-slate-500 transition hover:bg-slate-50 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-40"
+                    title={canEdit ? "Edit" : "This time entry is locked"}
+                  >
+                    <Edit3 size={16} />
+                  </button>
 
-                    <>
-
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onEdit(entry)
-                        }
-                        className="rounded-lg border border-slate-200 p-2 text-slate-500 transition hover:bg-slate-50 hover:text-indigo-600"
-                        title="Edit"
-                      >
-
-                        <Edit3 size={16} />
-
-                      </button>
-
-
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onDelete(entry)
-                        }
-                        className="rounded-lg border border-slate-200 p-2 text-slate-500 transition hover:bg-red-50 hover:text-red-600"
-                        title="Delete"
-                      >
-
-                        <Trash2 size={16} />
-
-                      </button>
-
-                    </>
-
-                  )}
+                  <button
+                    type="button"
+                    onClick={() => onDelete(entry)}
+                    disabled={!canEdit}
+                    className="rounded-lg border border-slate-200 p-2 text-slate-500 transition hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40"
+                    title={canEdit ? "Delete" : "This time entry is locked"}
+                  >
+                    <Trash2 size={16} />
+                  </button>
 
                 </div>
 
@@ -1267,7 +1513,7 @@ function TimesheetSkeleton() {
 
 function getMonday(value) {
   const date =
-    new Date(value);
+    parseLocalDate(value);
 
   date.setHours(
     0,
@@ -1319,7 +1565,7 @@ function addDays(
 
 function formatDateInput(value) {
   const date =
-    new Date(value);
+    parseLocalDate(value);
 
   const year =
     date.getFullYear();
@@ -1357,6 +1603,22 @@ function formatDay(value) {
       month: "short",
     }
   ).format(value);
+}
+
+function formatTime(value) {
+  if (!value) {
+    return "—";
+  }
+
+  const timestamp = new Date(value);
+  if (Number.isNaN(timestamp.getTime())) {
+    return "—";
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(timestamp);
 }
 
 
@@ -1423,6 +1685,45 @@ function formatMinutes(
   return `${hours}h ${minutes}m`;
 }
 
+function formatSignedMinutes(totalMinutes) {
+  const value = Number(totalMinutes) || 0;
+  if (value > 0) {
+    return `+${formatMinutes(value)}`;
+  }
+  if (value < 0) {
+    return `-${formatMinutes(Math.abs(value))}`;
+  }
+  return "0m";
+}
+
+function escapeCsvValue(value) {
+  const text = String(value ?? "");
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function parseLocalDate(value) {
+  if (value instanceof Date) {
+    return new Date(value.getFullYear(), value.getMonth(), value.getDate());
+  }
+
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value));
+  if (match) {
+    return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  }
+  return new Date(value);
+}
+
+function getTodayStart() {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return today;
+}
+
+function getDefaultEntryDate(start, end) {
+  const today = getTodayStart();
+  return today >= start && today <= end ? today : start;
+}
+
 
 // =========================================================
 // WEEK FINISHED
@@ -1452,52 +1753,6 @@ function isWeekFinished(
   );
 
   return end <= today;
-}
-
-
-// =========================================================
-// DATE INSIDE WEEK
-// =========================================================
-
-function isDateInsideWeek(
-  value,
-  start,
-  end
-) {
-  const date =
-    new Date(value);
-
-  const startDate =
-    new Date(start);
-
-  const endDate =
-    new Date(end);
-
-  date.setHours(
-    0,
-    0,
-    0,
-    0
-  );
-
-  startDate.setHours(
-    0,
-    0,
-    0,
-    0
-  );
-
-  endDate.setHours(
-    0,
-    0,
-    0,
-    0
-  );
-
-  return (
-    date >= startDate &&
-    date <= endDate
-  );
 }
 
 
