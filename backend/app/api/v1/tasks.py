@@ -7,8 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies.auth import get_current_user
 from app.core.database import get_db
+from app.core.exceptions import Forbidden
 from app.core.permissions import CurrentUser
-from app.schemas.task import TaskOut
+from app.schemas.task import TaskOut, TaskPatch
 from app.services import task_service
 
 
@@ -79,3 +80,30 @@ async def get_task(
     )
 
     return TaskOut.model_validate(task)
+
+
+@router.patch(
+    "/{task_id}",
+    response_model=TaskOut,
+)
+async def update_task(
+    task_id: uuid.UUID,
+    payload: TaskPatch,
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> TaskOut:
+    task = await task_service.get_task_or_404(
+        db,
+        task_id,
+        user.org_id,
+    )
+    if not (user.is_manager or task.assignee_user_id == user.id):
+        raise Forbidden("You may only edit tasks assigned to you")
+    updated = await task_service.update_task(
+        db,
+        task,
+        **payload.model_dump(exclude_unset=True),
+    )
+    await db.commit()
+    await db.refresh(updated)
+    return TaskOut.model_validate(updated)

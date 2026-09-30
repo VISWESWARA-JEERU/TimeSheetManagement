@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFound
+from app.models.enums import SyncState, TaskSource
 from app.models.project import Project
 from app.models.task import Task
 
@@ -110,3 +112,21 @@ async def list_tasks(
     return list(
         result.scalars().all()
     )
+
+
+async def update_task(
+    db: AsyncSession,
+    task: Task,
+    *,
+    description: str | None = None,
+    status: str | None = None,
+) -> Task:
+    if description is not None:
+        task.description = description
+    if status is not None:
+        task.status = status
+    task.local_updated_at = datetime.now(UTC)
+    if task.source == TaskSource.github:
+        task.sync_state = SyncState.pending_push
+    await db.flush()
+    return task

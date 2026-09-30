@@ -9,9 +9,11 @@ import {
   AlertCircle,
   CheckCircle2,
   ExternalLink,
-  //Github,
+  GitBranch,
   ListTodo,
+  Pencil,
   RefreshCw,
+  Save,
   UserRound,
   X,
 } from "lucide-react";
@@ -19,6 +21,7 @@ import {
 import Header from "../components/common/Header";
 import EmptyState from "../components/common/EmptyState";
 
+import { useAuth } from "../context/AuthContext";
 import { projectService } from "../services/projectService";
 import { taskService } from "../services/taskService";
 
@@ -61,6 +64,16 @@ function formatValue(value) {
     .replace(/\b\w/g, (letter) =>
       letter.toUpperCase()
     );
+}
+
+function getSyncLabel(syncState) {
+  const labels = {
+    synced: "Synced",
+    pending_push: "Pending push",
+    conflict: "Conflict",
+    error: "Sync error",
+  };
+  return labels[syncState] || formatValue(syncState);
 }
 
 
@@ -150,7 +163,7 @@ function TaskCard({
         <span className="inline-flex items-center gap-1.5 rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs font-medium text-slate-600">
 
           {isGithub ? (
-            <Github size={14} />
+            <GitBranch size={14} />
           ) : (
             <ListTodo size={14} />
           )}
@@ -191,9 +204,7 @@ function TaskCard({
 
         {task.sync_state && (
           <span className="rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs capitalize text-slate-500">
-            {String(
-              task.sync_state
-            ).replaceAll("_", " ")}
+            {getSyncLabel(task.sync_state)}
           </span>
         )}
 
@@ -230,7 +241,56 @@ function TaskDetailsModal({
   loading,
   error,
   onClose,
+  canEditTask,
+  canManageSync,
+  onSave,
+  onSyncAction,
 }) {
+  const [isEditing, setIsEditing] = useState(false);
+  const [description, setDescription] = useState(task?.description || "");
+  const [status, setStatus] = useState(task?.status || "");
+  const [actionLoading, setActionLoading] = useState(false);
+  const [actionError, setActionError] = useState("");
+  const [actionMessage, setActionMessage] = useState("");
+
+  async function saveChanges() {
+    setActionLoading(true);
+    setActionError("");
+    setActionMessage("");
+    try {
+      const updated = await onSave({ description, status });
+      setDescription(updated.description || "");
+      setStatus(updated.status || "");
+      setIsEditing(false);
+    } catch (requestError) {
+      setActionError(requestError.message || "Unable to save task changes.");
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
+  async function runSyncAction(action) {
+    setActionLoading(true);
+    setActionError("");
+    setActionMessage("");
+    try {
+      const result = await onSyncAction(action, task.id);
+      if (result.task) {
+        setDescription(result.task.description || "");
+        setStatus(result.task.status || "");
+      }
+      setActionMessage(
+        result.warnings?.length
+          ? result.warnings.join(" ")
+          : "Synchronization completed."
+      );
+    } catch (requestError) {
+      setActionError(requestError.message || "Unable to synchronize task.");
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4">
 
@@ -340,11 +400,20 @@ function TaskDetailsModal({
                 Description
               </p>
 
-              <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-600">
-                {task.description ||
-                  "No description provided."}
-              </p>
-
+              {isEditing ? (
+                <textarea
+                  value={description}
+                  onChange={(event) => setDescription(event.target.value)}
+                  rows={6}
+                  maxLength={50000}
+                  aria-label="Task description"
+                  className="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm leading-6 text-slate-700 outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
+                />
+              ) : (
+                <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-600">
+                  {task.description || "No description provided."}
+                </p>
+              )}
             </section>
 
 
@@ -359,10 +428,22 @@ function TaskDetailsModal({
                 )}
               />
 
-              <DetailItem
-                label="Status"
-                value={task.status}
-              />
+              {isEditing ? (
+                <label className="block">
+                  <span className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                    Status
+                  </span>
+                  <input
+                    value={status}
+                    onChange={(event) => setStatus(event.target.value)}
+                    maxLength={200}
+                    aria-label="Task status"
+                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
+                  />
+                </label>
+              ) : (
+                <DetailItem label="Status" value={task.status} />
+              )}
 
               <DetailItem
                 label="Active"
@@ -375,9 +456,7 @@ function TaskDetailsModal({
 
               <DetailItem
                 label="Sync State"
-                value={formatValue(
-                  task.sync_state
-                )}
+                value={getSyncLabel(task.sync_state)}
               />
 
               <DetailItem
@@ -407,7 +486,7 @@ function TaskDetailsModal({
 
                 <div className="mb-3 flex items-center gap-2">
 
-                  <Github size={18} />
+                  <GitBranch size={18} />
 
                   <h4 className="font-semibold text-slate-900">
                     GitHub Information
@@ -475,7 +554,7 @@ function TaskDetailsModal({
                     rel="noreferrer"
                     className="mt-4 inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-800"
                   >
-                    <Github size={16} />
+                    <GitBranch size={16} />
 
                     Open on GitHub
 
@@ -489,6 +568,93 @@ function TaskDetailsModal({
               </section>
 
             )}
+
+
+            {actionError && (
+              <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                <AlertCircle size={18} className="mt-0.5 shrink-0" />
+                {actionError}
+              </div>
+            )}
+
+            {actionMessage && (
+              <div className="flex items-start gap-2 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-700">
+                <CheckCircle2 size={18} className="mt-0.5 shrink-0" />
+                {actionMessage}
+              </div>
+            )}
+
+            <div className="flex flex-wrap gap-2 border-t border-slate-100 pt-4">
+              {isEditing ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={saveChanges}
+                    disabled={actionLoading}
+                    className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                  >
+                    <Save size={16} />
+                    {actionLoading ? "Saving..." : "Save"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDescription(task.description || "");
+                      setStatus(task.status || "");
+                      setIsEditing(false);
+                    }}
+                    disabled={actionLoading}
+                    className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700"
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : canEditTask ? (
+                <button
+                  type="button"
+                  onClick={() => setIsEditing(true)}
+                  className="inline-flex items-center gap-2 rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  <Pencil size={16} />
+                  Edit
+                </button>
+              ) : null}
+
+              {canManageSync &&
+                String(task.source || "").toLowerCase() === "github" &&
+                (task.sync_state === "conflict" ? (
+                  <>
+                    <div className="basis-full rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
+                      GitHub and local changes conflict. Choose which version to keep.
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => runSyncAction("use-github")}
+                      disabled={actionLoading}
+                      className="rounded-lg border border-amber-300 px-4 py-2 text-sm font-semibold text-amber-900 disabled:opacity-50"
+                    >
+                      Use GitHub
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => runSyncAction("keep-local")}
+                      disabled={actionLoading}
+                      className="rounded-lg bg-amber-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                    >
+                      Keep Mine
+                    </button>
+                  </>
+                ) : ["pending_push", "error"].includes(task.sync_state) ? (
+                  <button
+                    type="button"
+                    onClick={() => runSyncAction("push")}
+                    disabled={actionLoading}
+                    className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                  >
+                    {actionLoading ? "Pushing..." : "Push to GitHub"}
+                  </button>
+                ) : null)}
+            </div>
 
 
             {/* TIMESTAMPS */}
@@ -555,6 +721,7 @@ function DetailItem({
 // =========================================================
 
 function TasksPage() {
+  const { isAdmin, isManager, user } = useAuth();
   const [
     tasks,
     setTasks,
@@ -602,6 +769,10 @@ function TasksPage() {
     setError,
   ] = useState("");
 
+  const [projectSyncStatus, setProjectSyncStatus] = useState(null);
+  const [syncingProject, setSyncingProject] = useState(false);
+  const [syncError, setSyncError] = useState("");
+  const [syncSummary, setSyncSummary] = useState(null);
 
   // =====================================================
   // TASK DETAIL STATE
@@ -629,6 +800,12 @@ function TasksPage() {
     detailError,
     setDetailError,
   ] = useState("");
+
+  function changeProject(projectId) {
+    setSelectedProjectId(projectId);
+    setSyncSummary(null);
+    setSyncError("");
+  }
 
 
   // =====================================================
@@ -762,6 +939,30 @@ function TasksPage() {
     loadTasks();
   }, [loadTasks]);
 
+  useEffect(() => {
+    if (!selectedProjectId) {
+      return undefined;
+    }
+    let cancelled = false;
+    taskService.getProjectSyncStatus(selectedProjectId)
+      .then((status) => {
+        if (!cancelled) setProjectSyncStatus(status);
+      })
+      .catch((requestError) => {
+        if (!cancelled) {
+          setSyncError(requestError.message || "Unable to load GitHub link status.");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedProjectId]);
+
+  const currentProjectSyncStatus =
+    projectSyncStatus?.project_id === selectedProjectId
+      ? projectSyncStatus
+      : null;
+
 
   // =====================================================
   // LOAD SINGLE TASK
@@ -810,6 +1011,45 @@ function TasksPage() {
     setSelectedTask(null);
 
     setDetailError("");
+  }
+
+  async function syncSelectedProject() {
+    setSyncingProject(true);
+    setSyncError("");
+    setSyncSummary(null);
+    try {
+      const summary = await taskService.pullProject(selectedProjectId);
+      setSyncSummary(summary);
+      await loadTasks();
+      const status = await taskService.getProjectSyncStatus(selectedProjectId);
+      setProjectSyncStatus(status);
+    } catch (requestError) {
+      setSyncError(requestError.message || "GitHub synchronization failed.");
+    } finally {
+      setSyncingProject(false);
+    }
+  }
+
+  async function saveTaskChanges(payload) {
+    const updated = await taskService.update(selectedTask.id, payload);
+    setSelectedTask(updated);
+    await loadTasks();
+    return updated;
+  }
+
+  async function runTaskSyncAction(action, taskId) {
+    let result;
+    if (action === "push") {
+      result = await taskService.pushTask(taskId);
+    } else if (action === "use-github") {
+      result = await taskService.resolveUseGitHub(taskId);
+    } else {
+      result = await taskService.resolveKeepLocal(taskId);
+    }
+    const updated = result.task || result;
+    setSelectedTask(updated);
+    await loadTasks();
+    return { ...result, task: updated };
   }
 
 
@@ -872,6 +1112,23 @@ function TasksPage() {
         />
 
 
+        <div className="flex flex-wrap items-center gap-2">
+        {isAdmin && selectedProjectId && currentProjectSyncStatus?.linked && (
+          <button
+            type="button"
+            onClick={syncSelectedProject}
+            disabled={syncingProject || loading}
+            className="inline-flex items-center justify-center gap-2 rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <RefreshCw size={16} className={syncingProject ? "animate-spin" : ""} />
+            {syncingProject ? "Syncing..." : "Sync Now"}
+          </button>
+        )}
+        {isAdmin && selectedProjectId && currentProjectSyncStatus && !currentProjectSyncStatus.linked && (
+          <span className="rounded-lg border border-slate-200 px-3 py-2.5 text-sm text-slate-500">
+            Not linked to GitHub
+          </span>
+        )}
         <button
           type="button"
           onClick={loadTasks}
@@ -889,8 +1146,22 @@ function TasksPage() {
 
           Refresh
         </button>
+        </div>
 
       </div>
+
+      {syncError && (
+        <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+          {syncError}
+        </div>
+      )}
+
+      {syncSummary && (
+        <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
+          Sync complete: Created {syncSummary.created}, updated {syncSummary.updated},
+          conflicts {syncSummary.conflicts}, skipped {syncSummary.skipped}.
+        </div>
+      )}
 
 
       {/* FILTERS */}
@@ -915,11 +1186,7 @@ function TasksPage() {
               id="task-project-filter"
               value={selectedProjectId}
               disabled={projectsLoading}
-              onChange={(event) =>
-                setSelectedProjectId(
-                  event.target.value
-                )
-              }
+              onChange={(event) => changeProject(event.target.value)}
               className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
             >
               <option value="">
@@ -1180,10 +1447,17 @@ function TasksPage() {
       {detailsOpen && (
 
         <TaskDetailsModal
+          key={selectedTask?.id}
           task={selectedTask}
           loading={detailLoading}
           error={detailError}
           onClose={closeTaskDetails}
+          canEditTask={
+            isManager || selectedTask?.assignee_user_id === user?.id
+          }
+          canManageSync={isAdmin}
+          onSave={saveTaskChanges}
+          onSyncAction={runTaskSyncAction}
           projectName={
             selectedTask
               ? projectMap.get(

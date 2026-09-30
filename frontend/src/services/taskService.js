@@ -45,4 +45,41 @@ export const taskService = {
       `/tasks/${taskId}`
     );
   },
+
+  async update(taskId, payload) {
+    return apiClient.patch(
+      `/tasks/${taskId}`,
+      payload
+    );
+  },
+
+  async getProjectSyncStatus(projectId) {
+    return apiClient.get(
+      `/github-sync/projects/${projectId}/status`
+    );
+  },
+
+  async pullProject(projectId) {
+    return apiClient.post(
+      `/github-sync/projects/${projectId}/pull`
+    );
+  },
+
+  async pushTask(taskId) {
+    return apiClient.post(
+      `/github-sync/tasks/${taskId}/push`
+    );
+  },
+
+  async resolveUseGitHub(taskId) {
+    return apiClient.post(
+      `/github-sync/tasks/${taskId}/resolve/use-github`
+    );
+  },
+
+  async resolveKeepLocal(taskId) {
+    return apiClient.post(
+      `/github-sync/tasks/${taskId}/resolve/keep-local`
+    );
+  },
 };
