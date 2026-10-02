@@ -15,7 +15,7 @@ from app.core.config import settings
 from app.core.exceptions import AppError
 from app.core.logging import configure_logging, get_logger, request_id_var
 from app.core.redis import close_redis
-from app.workers import session_timeout_worker
+from app.workers import github_sync_worker, session_timeout_worker
 
 configure_logging(settings.LOG_LEVEL)
 log = get_logger("app.main")
@@ -26,13 +26,21 @@ _CSRF_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # noqa: ANN001, ARG001
     log.info("startup", env=settings.APP_ENV, local_dev_auth=settings.LOCAL_DEV_AUTH)
-    timeout_task = asyncio.create_task(session_timeout_worker.run_forever())
+    worker_tasks = [
+        asyncio.create_task(session_timeout_worker.run_forever()),
+    ]
+    if settings.GITHUB_SCHEDULED_SYNC_ENABLED:
+        worker_tasks.append(
+            asyncio.create_task(github_sync_worker.run_forever())
+        )
     try:
         yield
     finally:
-        timeout_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await timeout_task
+        for worker_task in worker_tasks:
+            worker_task.cancel()
+        for worker_task in worker_tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker_task
         await close_redis()
         log.info("shutdown")
 

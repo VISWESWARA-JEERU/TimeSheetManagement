@@ -65,7 +65,10 @@ class Settings(BaseSettings):
     GITHUB_INSTALLATION_ID: str | None = None
     GITHUB_PAT: str | None = None
     GITHUB_API_BASE: str = "https://api.github.com"
-    GITHUB_SYNC_INTERVAL_SECONDS: int = 600
+    GITHUB_SYNC_INTERVAL_SECONDS: int = Field(default=600, ge=60)
+    GITHUB_WEBHOOK_ENABLED: bool = False
+    GITHUB_WEBHOOK_SECRET: str | None = None
+    GITHUB_SCHEDULED_SYNC_ENABLED: bool = False
 
     # Rate limits
     RATE_LIMIT_AUTH: str = "10/minute"
@@ -86,6 +89,12 @@ class Settings(BaseSettings):
             )
         if self.APP_ENV in ("staging", "production") and not self.OIDC_ENABLED:
             raise ValueError("OIDC_ENABLED must be true when APP_ENV is staging or production")
+        if self.GITHUB_WEBHOOK_ENABLED and not (
+            self.GITHUB_WEBHOOK_SECRET and self.GITHUB_WEBHOOK_SECRET.strip()
+        ):
+            raise ValueError(
+                "GITHUB_WEBHOOK_SECRET must be configured when GITHUB_WEBHOOK_ENABLED is true"
+            )
         return self
 
 

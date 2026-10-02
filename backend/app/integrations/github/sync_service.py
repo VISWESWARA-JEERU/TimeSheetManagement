@@ -84,6 +84,8 @@ async def pull_project(
     db: AsyncSession,
     project_id: uuid.UUID,
     org_id: uuid.UUID,
+    *,
+    trigger: SyncTrigger = SyncTrigger.manual,
 ) -> dict[str, Any]:
     link = await get_project_link(db, project_id, org_id)
     if link is None:
@@ -108,6 +110,7 @@ async def pull_project(
             entity_id=project_id,
             gh_node_id=link.gh_project_node_id,
             status=SyncStatus.failed,
+            trigger=trigger,
             error_message=_safe_error(exc),
             request_payload={"project_id": str(project_id)},
         )
@@ -139,6 +142,7 @@ async def pull_project(
                 entity_id=None,
                 gh_node_id=item.get("id"),
                 status=SyncStatus.skipped,
+                trigger=trigger,
                 error_message="Unsupported or deleted GitHub Project item",
                 request_payload={"project_id": str(project_id)},
             )
@@ -162,6 +166,7 @@ async def pull_project(
                 entity_id=task.id,
                 gh_node_id=item.get("id"),
                 status=SyncStatus.skipped,
+                trigger=trigger,
                 error_message="GitHub item is already linked to another local project",
                 request_payload={"project_id": str(project_id)},
             )
@@ -201,6 +206,7 @@ async def pull_project(
                 entity_id=task.id,
                 gh_node_id=item.get("id"),
                 status=SyncStatus.success,
+                trigger=trigger,
                 request_payload={"project_id": str(project_id)},
                 response_payload={"operation": "created"},
             )
@@ -227,6 +233,7 @@ async def pull_project(
                 entity_id=task.id,
                 gh_node_id=item.get("id"),
                 status=SyncStatus.conflict,
+                trigger=trigger,
                 request_payload={"project_id": str(project_id)},
             )
             continue
@@ -247,6 +254,7 @@ async def pull_project(
             entity_id=task.id,
             gh_node_id=item.get("id"),
             status=SyncStatus.success,
+            trigger=trigger,
             request_payload={"project_id": str(project_id)},
             response_payload={"operation": "updated"},
         )
@@ -259,11 +267,25 @@ async def pull_project(
         entity_id=project_id,
         gh_node_id=link.gh_project_node_id,
         status=SyncStatus.success,
+        trigger=trigger,
         request_payload={"project_id": str(project_id), "item_count": len(items)},
         response_payload={key: value for key, value in summary.items() if key != "synced_at"},
     )
     await db.commit()
     return summary
+
+
+async def get_project_link_by_gh_node_id(
+    db: AsyncSession,
+    gh_project_node_id: str,
+) -> tuple[uuid.UUID, uuid.UUID] | None:
+    result = await db.execute(
+        select(GitHubProjectLink.project_id, Project.org_id)
+        .join(Project, Project.id == GitHubProjectLink.project_id)
+        .where(GitHubProjectLink.gh_project_node_id == gh_project_node_id)
+    )
+    row = result.one_or_none()
+    return (row.project_id, row.org_id) if row else None
 
 
 async def push_task(
