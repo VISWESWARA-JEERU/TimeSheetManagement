@@ -4,14 +4,15 @@ import asyncio
 import contextlib
 import uuid
 from contextlib import asynccontextmanager
+from urllib.parse import urlsplit
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse
 
 from app.api.v1.router import api_v1_router
-from app.core.config import settings
+from app.core.config import normalize_http_origin, settings
 from app.core.exceptions import AppError
 from app.core.logging import configure_logging, get_logger, request_id_var
 from app.core.redis import close_redis
@@ -21,6 +22,48 @@ configure_logging(settings.LOG_LEVEL)
 log = get_logger("app.main")
 
 _CSRF_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+def _request_origin(value: str, *, is_referer: bool) -> str | None:
+    try:
+        parsed = urlsplit(value)
+        if is_referer:
+            if not parsed.scheme or not parsed.netloc:
+                return None
+            value = f"{parsed.scheme}://{parsed.netloc}"
+        return normalize_http_origin(value)
+    except ValueError:
+        return None
+
+
+def _frame_ancestors_policy(existing_policy: str, directive: str) -> str:
+    preserved: list[str] = []
+    for item in existing_policy.split(";"):
+        item = item.strip()
+        if item and item.split(None, 1)[0].lower() != "frame-ancestors":
+            preserved.append(item)
+    preserved.append(directive)
+    return "; ".join(preserved)
+
+
+def _with_frame_ancestors(response: Response) -> None:
+    directive = "frame-ancestors 'self'"
+    if settings.allowed_embed_origins:
+        directive += " " + " ".join(settings.allowed_embed_origins)
+
+    current_policies = response.headers.getlist("content-security-policy")
+    if not current_policies:
+        response.headers["Content-Security-Policy"] = directive
+        return
+
+    updated_policies = [
+        _frame_ancestors_policy(policy, directive)
+        for header in current_policies
+        for policy in header.split(",")
+    ]
+    del response.headers["content-security-policy"]
+    for policy in updated_policies:
+        response.headers.append("Content-Security-Policy", policy)
 
 
 @asynccontextmanager
@@ -79,21 +122,44 @@ async def request_context(request: Request, call_next):  # noqa: ANN001
 @app.middleware("http")
 async def csrf_origin_guard(request: Request, call_next):  # noqa: ANN001
     if request.method not in _CSRF_SAFE_METHODS:
-        origin = request.headers.get("origin") or request.headers.get("referer")
-        if origin:
-            allowed = settings.cors_origins
-            if not any(origin.startswith(o) for o in allowed):
-                return ORJSONResponse(
-                    status_code=403,
-                    content={
-                        "error": {
-                            "code": "CSRF_ORIGIN_REJECTED",
-                            "message": "Request origin is not allowed",
-                            "details": {"origin": origin},
-                        }
-                    },
-                )
+        origin_header = request.headers.get("origin")
+        referer_header = request.headers.get("referer")
+        request_origin = None
+        if origin_header:
+            request_origin = _request_origin(origin_header, is_referer=False)
+        elif referer_header:
+            request_origin = _request_origin(referer_header, is_referer=True)
+
+        allowed_origins: set[str] = set()
+        for allowed in settings.cors_origins:
+            try:
+                allowed_origins.add(normalize_http_origin(allowed))
+            except ValueError:
+                continue
+
+        has_session_cookie = bool(request.cookies.get(settings.SESSION_COOKIE_NAME))
+        if (
+            ((origin_header or referer_header) and request_origin not in allowed_origins)
+            or (has_session_cookie and request_origin not in allowed_origins)
+        ):
+            return ORJSONResponse(
+                status_code=403,
+                content={
+                    "error": {
+                        "code": "CSRF_ORIGIN_REJECTED",
+                        "message": "Request origin is not allowed",
+                        "details": {},
+                    }
+                },
+            )
     return await call_next(request)
+
+
+@app.middleware("http")
+async def frame_ancestors_guard(request: Request, call_next):  # noqa: ANN001
+    response = await call_next(request)
+    _with_frame_ancestors(response)
+    return response
 
 
 @app.exception_handler(AppError)

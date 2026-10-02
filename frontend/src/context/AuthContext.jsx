@@ -212,7 +212,11 @@ export function AuthProvider({ children }) {
 
       // Backend may provide the IMS logout URL.
       if (result?.ims_end_session_url) {
-        window.location.assign(result.ims_end_session_url);
+        const embedded =
+          new URLSearchParams(window.location.search).get("embedded") === "1";
+        const logoutWindow =
+          embedded && window.top ? window.top : window;
+        logoutWindow.location.href = result.ims_end_session_url;
       }
 
       return result;

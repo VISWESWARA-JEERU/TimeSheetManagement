@@ -30,23 +30,29 @@ def _client_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
 
 
+def _session_cookie_options() -> dict[str, object]:
+    return {
+        "httponly": True,
+        "secure": settings.SESSION_COOKIE_SECURE,
+        "samesite": settings.SESSION_COOKIE_SAMESITE,
+        "path": "/",
+        "domain": None,
+    }
+
+
 def _set_session_cookie(response: Response, token: str, expires_in: int) -> None:
     response.set_cookie(
         key=settings.SESSION_COOKIE_NAME,
         value=token,
         max_age=expires_in,
-        httponly=True,
-        secure=settings.SESSION_COOKIE_SECURE,
-        samesite=settings.SESSION_COOKIE_SAMESITE,
-        path="/",
+        **_session_cookie_options(),
     )
 
 
 def _clear_session_cookie(response: Response) -> None:
     response.delete_cookie(
         key=settings.SESSION_COOKIE_NAME,
-        path="/",
-        samesite=settings.SESSION_COOKIE_SAMESITE,
+        **_session_cookie_options(),
     )
 
 

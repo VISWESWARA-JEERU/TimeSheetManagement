@@ -334,4 +334,16 @@ async def ims_end_session_url() -> str | None:
     except IntegrationError as exc:
         log.warning("oidc_end_session_discovery_failed", reason=str(exc))
         return None
-    return discovery.get("end_session_endpoint")
+    end_session_endpoint = discovery.get("end_session_endpoint")
+    client_id = settings.oidc_client_id
+    if not end_session_endpoint or not client_id:
+        return None
+
+    params = urlencode(
+        {
+            "client_id": client_id,
+            "post_logout_redirect_uri": settings.oidc_post_logout_redirect,
+        }
+    )
+    separator = "&" if "?" in end_session_endpoint else "?"
+    return end_session_endpoint + separator + params

@@ -9,6 +9,37 @@ from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def normalize_http_origin(value: str, *, allow_path: bool = False) -> str:
+    value = value.strip()
+    if not value or "*" in value or any(char.isspace() for char in value):
+        raise ValueError("Origin must be an explicit HTTP(S) origin")
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("Origin is invalid") from exc
+    if (
+        parsed.scheme.lower() not in ("http", "https")
+        or not parsed.hostname
+        or port == 0
+        or parsed.username is not None
+        or parsed.password is not None
+        or (not allow_path and parsed.path)
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("Origin must not contain credentials, paths, query, or fragment")
+    hostname = parsed.hostname.lower()
+    if ":" in hostname:
+        hostname = f"[{hostname}]"
+    if port is not None and not (
+        (parsed.scheme.lower() == "http" and port == 80)
+        or (parsed.scheme.lower() == "https" and port == 443)
+    ):
+        hostname = f"{hostname}:{port}"
+    return f"{parsed.scheme.lower()}://{hostname}"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -38,6 +69,10 @@ class Settings(BaseSettings):
     SESSION_TTL_SECONDS: int = 60 * 60 * 12
     SESSION_COOKIE_SECURE: bool = False
     SESSION_COOKIE_SAMESITE: Literal["lax", "strict", "none"] = "lax"
+
+    # Browser embedding and RP-initiated logout.
+    IMS_ALLOWED_EMBED_ORIGINS: str = ""
+    IMS_OIDC_POST_LOGOUT_REDIRECT: str | None = None
 
     # Auth mode
     LOCAL_DEV_AUTH: bool = False
@@ -99,10 +134,42 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _guard_local_dev_auth(self) -> "Settings":
         oidc_enabled = self.oidc_enabled
+        if self.SESSION_COOKIE_SAMESITE == "none" and not self.SESSION_COOKIE_SECURE:
+            raise ValueError("SESSION_COOKIE_SECURE must be true when SameSite=None")
+        if self.APP_ENV in ("staging", "production") and not self.SESSION_COOKIE_SECURE:
+            raise ValueError("SESSION_COOKIE_SECURE must be true in staging and production")
         if self.APP_ENV in ("staging", "production") and self.LOCAL_DEV_AUTH:
             raise ValueError(
                 "LOCAL_DEV_AUTH must be false when APP_ENV is staging or production"
             )
+        embed_origins = self.allowed_embed_origins
+        if self.APP_ENV in ("staging", "production"):
+            for origin in embed_origins:
+                if not origin.startswith("https://"):
+                    raise ValueError(
+                        "IMS_ALLOWED_EMBED_ORIGINS must use HTTPS outside local/dev"
+                    )
+        logout_redirect = self.IMS_OIDC_POST_LOGOUT_REDIRECT
+        if logout_redirect and logout_redirect.strip():
+            try:
+                redirect_origin = normalize_http_origin(logout_redirect, allow_path=True)
+                parsed_redirect = urlsplit(logout_redirect)
+                frontend_origin = normalize_http_origin(self.FRONTEND_URL, allow_path=True)
+            except ValueError as exc:
+                raise ValueError("IMS_OIDC_POST_LOGOUT_REDIRECT must be a valid absolute URL") from exc
+            if parsed_redirect.fragment:
+                raise ValueError("IMS_OIDC_POST_LOGOUT_REDIRECT must not contain a fragment")
+            if redirect_origin not in {frontend_origin, *embed_origins}:
+                raise ValueError(
+                    "IMS_OIDC_POST_LOGOUT_REDIRECT must use FRONTEND_URL or an approved IMS origin"
+                )
+            if (
+                self.APP_ENV in ("staging", "production")
+                and not redirect_origin.startswith("https://")
+            ):
+                raise ValueError(
+                    "IMS_OIDC_POST_LOGOUT_REDIRECT must use HTTPS outside local/dev"
+                )
         if self.APP_ENV in ("staging", "production") and not oidc_enabled:
             raise ValueError("IMS_OIDC_ENABLED must be true when APP_ENV is staging or production")
         if oidc_enabled:
@@ -193,6 +260,24 @@ class Settings(BaseSettings):
             for group in value.split(",")
             if group.strip()
         }
+
+    @property
+    def allowed_embed_origins(self) -> list[str]:
+        origins: list[str] = []
+        for raw_origin in self.IMS_ALLOWED_EMBED_ORIGINS.split(","):
+            if not raw_origin.strip():
+                continue
+            origin = normalize_http_origin(raw_origin)
+            if origin not in origins:
+                origins.append(origin)
+        return origins
+
+    @property
+    def oidc_post_logout_redirect(self) -> str:
+        configured = self.IMS_OIDC_POST_LOGOUT_REDIRECT
+        if configured and configured.strip():
+            return configured.strip()
+        return f"{self.FRONTEND_URL.rstrip('/')}/login"
 
     @property
     def cors_origins(self) -> list[str]:

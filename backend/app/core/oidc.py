@@ -66,13 +66,22 @@ class OIDCDiscoveryCache:
                     raise IntegrationError(f"OIDC discovery missing field: {required}")
             if doc["issuer"].rstrip("/") != issuer.rstrip("/"):
                 raise IntegrationError("OIDC discovery issuer does not match configured issuer")
-            for endpoint in (
+            endpoints = [
                 doc["authorization_endpoint"],
                 doc["token_endpoint"],
                 doc["jwks_uri"],
-            ):
+            ]
+            end_session_endpoint = doc.get("end_session_endpoint")
+            if end_session_endpoint is not None:
+                if not isinstance(end_session_endpoint, str) or not end_session_endpoint:
+                    raise IntegrationError(
+                        "OIDC discovery contains an invalid end-session endpoint"
+                    )
+                endpoints.append(end_session_endpoint)
+            for endpoint in endpoints:
                 try:
                     parsed_endpoint = urlsplit(endpoint)
+                    _ = parsed_endpoint.port
                 except ValueError as exc:
                     raise IntegrationError(
                         "OIDC discovery contains an invalid endpoint"
@@ -81,6 +90,7 @@ class OIDCDiscoveryCache:
                     not parsed_endpoint.hostname
                     or parsed_endpoint.username is not None
                     or parsed_endpoint.password is not None
+                    or parsed_endpoint.fragment
                     or (
                         settings.APP_ENV not in ("local", "dev")
                         and parsed_endpoint.scheme != "https"
