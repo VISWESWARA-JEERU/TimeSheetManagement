@@ -13,8 +13,11 @@ import {
 
 import Sidebar from "../components/common/Sidebar";
 import { useAuth } from "../context/AuthContext";
+import EmbeddedLayout from "./EmbeddedLayout";
+import { useEmbeddedMode } from "../hooks/useEmbeddedMode";
 
 function AppLayout() {
+  const isEmbedded = useEmbeddedMode();
   const {
     user,
     loading,
@@ -93,6 +96,10 @@ function AppLayout() {
     } finally {
       setLoggingOut(false);
     }
+  }
+
+  if (isEmbedded) {
+    return <EmbeddedLayout />;
   }
 
   return (

@@ -20,6 +20,7 @@ import {
 
 import { Link } from "react-router-dom";
 
+import { useEmbeddedMode } from "../hooks/useEmbeddedMode";
 import { attendanceService } from "../services/attendanceService";
 import { projectService } from "../services/projectService";
 import { timeEntryService } from "../services/timeEntryService";
@@ -29,6 +30,10 @@ import { useAuth } from "../context/AuthContext";
 
 function TodayPage() {
   const { user } = useAuth();
+  const isEmbedded = useEmbeddedMode();
+  const timesheetPath = isEmbedded
+    ? "/timesheet?embedded=1"
+    : "/timesheet";
 
   const [attendance, setAttendance] = useState(null);
 
@@ -279,7 +284,11 @@ function TodayPage() {
   // =====================================================
 
   return (
-    <div className="mx-auto w-full max-w-7xl space-y-6">
+    <div
+      className={`mx-auto w-full max-w-7xl ${
+        isEmbedded ? "space-y-4" : "space-y-6"
+      }`}
+    >
 
       {/* ==========================================
           HEADER
@@ -289,15 +298,27 @@ function TodayPage() {
 
         <div>
 
-          <p className="text-sm font-medium text-slate-500">
-            {getGreeting()}
-          </p>
+          {!isEmbedded && (
+            <p className="text-sm font-medium text-slate-500">
+              {getGreeting()}
+            </p>
+          )}
 
-          <h1 className="mt-1 text-2xl font-bold text-slate-900 sm:text-3xl">
-            {user?.full_name || "Today"}
+          <h1
+            className={`font-bold text-slate-900 ${
+              isEmbedded
+                ? "text-xl"
+                : "mt-1 text-2xl sm:text-3xl"
+            }`}
+          >
+            {isEmbedded ? "Today" : user?.full_name || "Today"}
           </h1>
 
-          <div className="mt-2 flex items-center gap-2 text-sm text-slate-500">
+          <div
+            className={`flex items-center gap-2 text-sm text-slate-500 ${
+              isEmbedded ? "mt-1" : "mt-2"
+            }`}
+          >
 
             <CalendarDays size={16} />
 
@@ -660,7 +681,7 @@ function TodayPage() {
 
 
           <Link
-            to="/timesheet"
+            to={timesheetPath}
             className="inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-700"
           >
 
@@ -698,7 +719,7 @@ function TodayPage() {
 
 
             <Link
-              to="/timesheet"
+              to={timesheetPath}
               className="mt-5 inline-flex items-center gap-2 text-sm font-semibold text-indigo-600 hover:text-indigo-700"
             >
 

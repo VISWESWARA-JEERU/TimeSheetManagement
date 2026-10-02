@@ -23,12 +23,14 @@ import Header from "../components/common/Header";
 import EmptyState from "../components/common/EmptyState";
 import TimeEntryForm from "../components/timesheet/TimeEntryForm";
 
+import { useEmbeddedMode } from "../hooks/useEmbeddedMode";
 import { projectService } from "../services/projectService";
 import { timeEntryService } from "../services/timeEntryService";
 import { timesheetService } from "../services/timesheetService";
 
 
 function TimesheetPage() {
+  const isEmbedded = useEmbeddedMode();
   const [weekStart, setWeekStart] = useState(
     getMonday(new Date())
   );
@@ -625,12 +627,29 @@ function TimesheetPage() {
   // =====================================================
 
   return (
-    <div className="mx-auto max-w-7xl space-y-6 p-5 md:p-8">
+    <div
+      className={`mx-auto max-w-7xl ${
+        isEmbedded
+          ? "space-y-4 p-0"
+          : "space-y-6 p-5 md:p-8"
+      }`}
+    >
 
-      <Header
-        title="My Timesheet"
-        subtitle="Track your project and task work for the week"
-      />
+      {isEmbedded ? (
+        <div className="mb-2">
+          <h1 className="text-xl font-bold tracking-tight text-slate-900">
+            My Timesheet
+          </h1>
+          <p className="mt-0.5 text-xs text-slate-500">
+            Track your project and task work for the week
+          </p>
+        </div>
+      ) : (
+        <Header
+          title="My Timesheet"
+          subtitle="Track your project and task work for the week"
+        />
+      )}
 
 
       {/* ==========================================
