@@ -4,10 +4,12 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import select
+from pydantic import EmailStr, TypeAdapter, ValidationError as PydanticValidationError
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.exceptions import Conflict, Forbidden, Unauthenticated, ValidationError
 from app.core.logging import get_logger
 from app.core.permissions import CurrentUser
 from app.models.enums import Role, UserStatus
@@ -15,6 +17,7 @@ from app.models.organization import Organization
 from app.models.user import AppUser, ImsIdentity, UserRole
 
 log = get_logger("app.user_service")
+_EMAIL_TYPE = TypeAdapter(EmailStr)
 
 
 @dataclass
@@ -27,25 +30,40 @@ class ProvisionedUser:
 def _roles_from_ims_groups(groups: list[str]) -> set[Role]:
     result: set[Role] = set()
     gset = {g.strip() for g in groups if g and isinstance(g, str)}
-    if settings.OIDC_GROUP_TO_ROLE_ADMIN and settings.OIDC_GROUP_TO_ROLE_ADMIN in gset:
+    if settings.oidc_groups_for_role("admin") & gset:
         result.add(Role.admin)
-    if settings.OIDC_GROUP_TO_ROLE_MANAGER and settings.OIDC_GROUP_TO_ROLE_MANAGER in gset:
+    if settings.oidc_groups_for_role("manager") & gset:
         result.add(Role.manager)
-    if settings.OIDC_GROUP_TO_ROLE_MEMBER and settings.OIDC_GROUP_TO_ROLE_MEMBER in gset:
+    if settings.oidc_groups_for_role("member") & gset:
         result.add(Role.member)
     if not result:
         result.add(Role.member)
     return result
 
 
-async def _default_org_id(db: AsyncSession) -> uuid.UUID:
-    org = (await db.execute(select(Organization).limit(1))).scalar_one_or_none()
-    if org is None:
-        raise RuntimeError(
-            "No organization exists. Run `alembic upgrade head` (0002 seeds a default org) "
-            "or the seed script."
+async def _provisioning_org_id(db: AsyncSession) -> uuid.UUID:
+    if settings.IMS_OIDC_ORG_ID:
+        org = (
+            await db.execute(
+                select(Organization).where(Organization.id == settings.IMS_OIDC_ORG_ID)
+            )
+        ).scalar_one_or_none()
+        if org is None:
+            raise ValidationError(
+                "IMS_OIDC_ORG_ID does not identify an existing organization"
+            )
+        return org.id
+
+    organizations = (await db.execute(select(Organization).limit(2))).scalars().all()
+    if len(organizations) == 1:
+        return organizations[0].id
+    if not organizations:
+        raise ValidationError(
+            "No organization exists for IMS user provisioning; create an organization first"
         )
-    return org.id
+    raise ValidationError(
+        "Multiple organizations exist; set IMS_OIDC_ORG_ID to select the provisioning organization"
+    )
 
 
 async def ensure_user_roles(db: AsyncSession, user: AppUser, roles: set[Role]) -> set[Role]:
@@ -64,26 +82,35 @@ async def provision_from_ims(db: AsyncSession, claims: dict[str, Any]) -> Provis
     """JIT user creation/update from a validated ID token claim set."""
     subject = claims.get("sub")
     if not subject or not isinstance(subject, str):
-        raise ValueError("IMS claim `sub` is required")
+        raise Unauthenticated("IMS identity token is missing a valid subject")
     email = claims.get("email")
     if not email or not isinstance(email, str):
-        raise ValueError("IMS claim `email` is required")
-    full_name = claims.get("name") or claims.get("preferred_username") or email
+        raise Unauthenticated("IMS identity token is missing an email")
+    try:
+        email = str(_EMAIL_TYPE.validate_python(email.strip())).lower()
+    except PydanticValidationError as exc:
+        raise Unauthenticated("IMS identity token contains an invalid email") from exc
+    full_name_claim = claims.get("name") or claims.get("preferred_username")
+    full_name = full_name_claim.strip() if isinstance(full_name_claim, str) else ""
+    full_name = full_name or email
 
-    groups_claim = settings.OIDC_GROUP_CLAIM
-    raw_groups = claims.get(groups_claim) or []
+    groups_claim = settings.oidc_groups_claim
+    raw_groups = claims.get(groups_claim, [])
     if isinstance(raw_groups, str):
         groups = [g.strip() for g in raw_groups.split(",") if g.strip()]
     elif isinstance(raw_groups, list):
-        groups = [g for g in raw_groups if isinstance(g, str)]
-    else:
+        if any(not isinstance(group, str) for group in raw_groups):
+            raise Unauthenticated("IMS identity token contains invalid group claims")
+        groups = [g.strip() for g in raw_groups if g.strip()]
+    elif raw_groups is None:
         groups = []
+    else:
+        raise Unauthenticated("IMS identity token contains invalid group claims")
     target_roles = _roles_from_ims_groups(groups)
 
     is_new = False
-    user: AppUser | None = None
+    email_verified = claims.get("email_verified") is True
 
-    # Prefer provider subject match, then email fallback.
     identity = (
         await db.execute(
             select(ImsIdentity).where(
@@ -92,19 +119,35 @@ async def provision_from_ims(db: AsyncSession, claims: dict[str, Any]) -> Provis
             )
         )
     ).scalar_one_or_none()
-
+    subject_user = (
+        await db.execute(select(AppUser).where(AppUser.ims_user_id == subject))
+    ).scalar_one_or_none()
+    identity_user = None
     if identity is not None:
-        user = (
+        identity_user = (
             await db.execute(select(AppUser).where(AppUser.id == identity.user_id))
         ).scalar_one()
-    else:
-        user = (
-            await db.execute(select(AppUser).where(AppUser.email == email))
-        ).scalar_one_or_none()
+    if (
+        subject_user is not None
+        and identity_user is not None
+        and subject_user.id != identity_user.id
+    ):
+        raise Conflict("IMS subject is linked to conflicting application accounts")
 
-    org_id = await _default_org_id(db)
+    user = subject_user or identity_user
+    if user is None:
+        if not email_verified:
+            raise Forbidden("A verified IMS email is required for account provisioning")
+        user = (
+            await db.execute(
+                select(AppUser).where(func.lower(AppUser.email) == email)
+            )
+        ).scalar_one_or_none()
+        if user is not None and user.ims_user_id not in (None, subject):
+            raise Conflict("IMS email belongs to an account linked to another IMS subject")
 
     if user is None:
+        org_id = await _provisioning_org_id(db)
         user = AppUser(
             org_id=org_id,
             ims_user_id=subject,
@@ -117,15 +160,27 @@ async def provision_from_ims(db: AsyncSession, claims: dict[str, Any]) -> Provis
         await db.flush()
         is_new = True
 
-    # Update mutable profile fields.
-    user.full_name = full_name or user.full_name
-    if not user.ims_user_id:
-        user.ims_user_id = subject
-
     if user.status != UserStatus.active:
-        # Disabled users may authenticate against IMS but cannot create a session.
-        # Handled by the caller (AuthService) after role assignment.
-        pass
+        raise Forbidden("Account is disabled")
+    if user.ims_user_id not in (None, subject):
+        raise Conflict("Application account is linked to another IMS subject")
+
+    if email_verified and user.email.lower() != email:
+        other_user = (
+            await db.execute(
+                select(AppUser).where(
+                    func.lower(AppUser.email) == email,
+                    AppUser.id != user.id,
+                )
+            )
+        ).scalar_one_or_none()
+        if other_user is not None:
+            raise Conflict("Verified IMS email belongs to another application account")
+        user.email = email
+    if full_name_claim:
+        user.full_name = full_name
+    if user.ims_user_id is None:
+        user.ims_user_id = subject
 
     if identity is None:
         db.add(

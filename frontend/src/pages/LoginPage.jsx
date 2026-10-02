@@ -14,6 +14,11 @@ import {
 import { useAuth } from "../context/AuthContext";
 
 const PENDING_CHECKIN_KEY = "timesheet_pending_checkin";
+const CALLBACK_ERROR_MESSAGES = {
+  access_denied: "Sign-in was cancelled.",
+  authentication_failed: "Sign-in failed. Please try again.",
+  missing_params: "The sign-in response was incomplete. Please try again.",
+};
 
 function LoginPage() {
   const location = useLocation();
@@ -210,8 +215,13 @@ function LoginPage() {
     authConfig?.oidc_enabled
   );
 
+  const callbackError = new URLSearchParams(location.search).get("error");
+  const callbackErrorMessage =
+    typeof CALLBACK_ERROR_MESSAGES[callbackError] === "string"
+      ? CALLBACK_ERROR_MESSAGES[callbackError]
+      : "";
   const displayedError =
-    localError || authError;
+    localError || authError || callbackErrorMessage;
 
   return (
     <div className="flex min-h-screen bg-slate-50">
@@ -378,7 +388,7 @@ function LoginPage() {
                 IMS / OIDC LOGIN
             ----------------------------- */}
 
-            {!isLocalDev && isOIDCEnabled && (
+            {isOIDCEnabled && (
               <button
                 type="button"
                 onClick={handleIMSLogin}

@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies.auth import get_current_user
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.exceptions import Unauthenticated
+from app.core.exceptions import AppError, Unauthenticated
 from app.core.logging import get_logger
 from app.core.permissions import CurrentUser, permissions_for
 from app.models.enums import GeoPermission
@@ -53,12 +53,13 @@ def _clear_session_cookie(response: Response) -> None:
 @router.get("/config", response_model=AuthConfigResponse)
 async def auth_config() -> AuthConfigResponse:
     return AuthConfigResponse(
-        oidc_enabled=settings.OIDC_ENABLED,
+        oidc_enabled=settings.oidc_enabled,
         local_dev_auth=settings.LOCAL_DEV_AUTH and settings.APP_ENV in ("local", "dev"),
         app_name=settings.APP_NAME,
     )
 
 
+@router.post("/ims/login", response_model=StartLoginResponse)
 @router.post("/login", response_model=StartLoginResponse)
 async def start_login(
     request: Request,
@@ -73,6 +74,7 @@ async def start_login(
     return StartLoginResponse(authorize_url=url, state="")
 
 
+@router.get("/ims/callback")
 @router.get("/callback")
 async def oidc_callback(
     request: Request,
@@ -82,23 +84,31 @@ async def oidc_callback(
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     if error:
+        safe_error = "access_denied" if error == "access_denied" else "authentication_failed"
         return RedirectResponse(
-            url=f"{settings.FRONTEND_URL}/login?error={error}",
+            url=f"{settings.FRONTEND_URL.rstrip('/')}/login?error={safe_error}",
             status_code=status.HTTP_302_FOUND,
         )
     if not code or not state:
         return RedirectResponse(
-            url=f"{settings.FRONTEND_URL}/login?error=missing_params",
+            url=f"{settings.FRONTEND_URL.rstrip('/')}/login?error=missing_params",
             status_code=status.HTTP_302_FOUND,
         )
 
-    issued, return_to = await auth_service.complete_oidc_login(
-        db,
-        code=code,
-        state=state,
-        ip=_client_ip(request),
-        user_agent=request.headers.get("user-agent"),
-    )
+    try:
+        issued, return_to = await auth_service.complete_oidc_login(
+            db,
+            code=code,
+            state=state,
+            ip=_client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+        )
+    except AppError as exc:
+        log.warning("oidc_callback_failed", code=exc.code, reason=str(exc))
+        return RedirectResponse(
+            url=f"{settings.FRONTEND_URL.rstrip('/')}/login?error=authentication_failed",
+            status_code=status.HTTP_302_FOUND,
+        )
 
     response = RedirectResponse(url=return_to, status_code=status.HTTP_302_FOUND)
     _set_session_cookie(response, issued.token, settings.SESSION_TTL_SECONDS)

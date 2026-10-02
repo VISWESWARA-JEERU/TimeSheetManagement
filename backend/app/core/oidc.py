@@ -4,6 +4,7 @@ import asyncio
 import time
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 import jwt
@@ -42,34 +43,78 @@ class OIDCDiscoveryCache:
             if self._discovery and self._discovery.expires_at > now:
                 return self._discovery.value
 
-            if not settings.OIDC_ISSUER:
+            issuer = settings.oidc_issuer
+            if not issuer:
                 raise IntegrationError("OIDC issuer is not configured")
 
-            url = settings.OIDC_ISSUER.rstrip("/") + "/.well-known/openid-configuration"
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                r = await client.get(url)
+            url = issuer.rstrip("/") + "/.well-known/openid-configuration"
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    r = await client.get(url)
+            except httpx.HTTPError as exc:
+                raise IntegrationError("OIDC discovery could not reach the identity provider") from exc
             if r.status_code != 200:
                 raise IntegrationError(f"OIDC discovery failed: HTTP {r.status_code}")
-            doc = r.json()
+            try:
+                doc = r.json()
+            except ValueError as exc:
+                raise IntegrationError("OIDC discovery returned an invalid response") from exc
+            if not isinstance(doc, dict):
+                raise IntegrationError("OIDC discovery returned an invalid response")
             for required in ("authorization_endpoint", "token_endpoint", "jwks_uri", "issuer"):
-                if required not in doc:
+                if not isinstance(doc.get(required), str) or not doc[required]:
                     raise IntegrationError(f"OIDC discovery missing field: {required}")
+            if doc["issuer"].rstrip("/") != issuer.rstrip("/"):
+                raise IntegrationError("OIDC discovery issuer does not match configured issuer")
+            for endpoint in (
+                doc["authorization_endpoint"],
+                doc["token_endpoint"],
+                doc["jwks_uri"],
+            ):
+                try:
+                    parsed_endpoint = urlsplit(endpoint)
+                except ValueError as exc:
+                    raise IntegrationError(
+                        "OIDC discovery contains an invalid endpoint"
+                    ) from exc
+                if (
+                    not parsed_endpoint.hostname
+                    or parsed_endpoint.username is not None
+                    or parsed_endpoint.password is not None
+                    or (
+                        settings.APP_ENV not in ("local", "dev")
+                        and parsed_endpoint.scheme != "https"
+                    )
+                    or (
+                        settings.APP_ENV in ("local", "dev")
+                        and parsed_endpoint.scheme not in ("http", "https")
+                    )
+                ):
+                    raise IntegrationError("OIDC discovery contains an unsafe endpoint")
 
             self._discovery = _CacheEntry(doc, now + _DISCOVERY_TTL)
             return doc
 
     async def jwks(self, force_refresh: bool = False) -> dict[str, Any]:
+        doc = await self.discovery()
         async with self._lock:
             now = time.monotonic()
             if not force_refresh and self._jwks and self._jwks.expires_at > now:
                 return self._jwks.value
 
-            doc = await self.discovery()
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                r = await client.get(doc["jwks_uri"])
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    r = await client.get(doc["jwks_uri"])
+            except httpx.HTTPError as exc:
+                raise IntegrationError("OIDC JWKS could not be fetched") from exc
             if r.status_code != 200:
                 raise IntegrationError(f"JWKS fetch failed: HTTP {r.status_code}")
-            jwks = r.json()
+            try:
+                jwks = r.json()
+            except ValueError as exc:
+                raise IntegrationError("OIDC JWKS endpoint returned an invalid response") from exc
+            if not isinstance(jwks, dict) or not isinstance(jwks.get("keys"), list):
+                raise IntegrationError("OIDC JWKS endpoint returned an invalid response")
             self._jwks = _CacheEntry(jwks, now + _JWKS_TTL)
             return jwks
 
@@ -77,21 +122,36 @@ class OIDCDiscoveryCache:
 discovery_cache = OIDCDiscoveryCache()
 
 
-def _select_jwk(jwks: dict[str, Any], kid: str | None) -> dict[str, Any]:
+def _select_jwk(jwks: dict[str, Any], kid: str | None, alg: str) -> dict[str, Any]:
     keys = jwks.get("keys") or []
     if kid:
         for k in keys:
-            if k.get("kid") == kid:
+            if not isinstance(k, dict):
+                continue
+            if (
+                k.get("kid") == kid
+                and k.get("kty") == "RSA"
+                and k.get("use", "sig") == "sig"
+                and k.get("alg", alg) == alg
+            ):
                 return k
-    # Fallback: use the first signing key with a matching use/alg.
     for k in keys:
-        if k.get("use") == "sig" or "alg" in k:
+        if not isinstance(k, dict):
+            continue
+        if (
+            not kid
+            and k.get("kty") == "RSA"
+            and k.get("use", "sig") == "sig"
+            and k.get("alg", alg) == alg
+        ):
             return k
     raise Unauthenticated("No suitable signing key found in JWKS")
 
 
 async def verify_id_token(id_token: str, expected_nonce: str) -> dict[str, Any]:
-    if not settings.OIDC_ISSUER or not settings.OIDC_CLIENT_ID:
+    issuer = settings.oidc_issuer
+    client_id = settings.oidc_client_id
+    if not issuer or not client_id:
         raise IntegrationError("OIDC is not configured")
 
     try:
@@ -100,19 +160,19 @@ async def verify_id_token(id_token: str, expected_nonce: str) -> dict[str, Any]:
         raise Unauthenticated("Malformed ID token") from e
 
     kid = header.get("kid")
-    alg = header.get("alg", "RS256")
-    if not isinstance(alg, str) or not alg.startswith("RS") and alg != "RS256":
-        # Restrict to RS* family for the IMS IdP.
-        if alg not in {"RS256", "RS384", "RS512"}:
-            raise Unauthenticated(f"Unsupported ID token alg: {alg}")
+    alg = header.get("alg")
+    if not isinstance(alg, str) or alg not in {"RS256", "RS384", "RS512"}:
+        raise Unauthenticated("Unsupported ID token algorithm")
+    if kid is not None and not isinstance(kid, str):
+        raise Unauthenticated("ID token key identifier is invalid")
 
     jwks = await discovery_cache.jwks()
     try:
-        jwk = _select_jwk(jwks, kid)
+        jwk = _select_jwk(jwks, kid, alg)
     except Unauthenticated:
         # Key rotation: refresh once and retry.
         jwks = await discovery_cache.jwks(force_refresh=True)
-        jwk = _select_jwk(jwks, kid)
+        jwk = _select_jwk(jwks, kid, alg)
 
     try:
         public_key = RSAAlgorithm.from_jwk(jwk)
@@ -124,8 +184,8 @@ async def verify_id_token(id_token: str, expected_nonce: str) -> dict[str, Any]:
             id_token,
             public_key,
             algorithms=[alg],
-            audience=settings.OIDC_CLIENT_ID,
-            issuer=settings.OIDC_ISSUER.rstrip("/"),
+            audience=client_id,
+            issuer=issuer.rstrip("/"),
             options={"require": ["exp", "iat", "iss", "aud", "sub"]},
         )
     except jwt.ExpiredSignatureError as e:
@@ -133,7 +193,11 @@ async def verify_id_token(id_token: str, expected_nonce: str) -> dict[str, Any]:
     except jwt.InvalidTokenError as e:
         raise Unauthenticated("ID token validation failed") from e
 
-    if expected_nonce and claims.get("nonce") != expected_nonce:
+    if not expected_nonce or claims.get("nonce") != expected_nonce:
         raise Unauthenticated("ID token nonce mismatch")
+
+    audience = claims.get("aud")
+    if isinstance(audience, list) and len(audience) > 1 and claims.get("azp") != client_id:
+        raise Unauthenticated("ID token authorized party mismatch")
 
     return claims

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import uuid
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import urlsplit
 
-from pydantic import Field, field_validator , model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -41,6 +43,19 @@ class Settings(BaseSettings):
     LOCAL_DEV_AUTH: bool = False
 
     # OIDC
+    IMS_OIDC_ENABLED: bool = False
+    IMS_OIDC_ISSUER: str | None = None
+    IMS_OIDC_CLIENT_ID: str | None = None
+    IMS_OIDC_CLIENT_SECRET: str | None = None
+    IMS_OIDC_REDIRECT_URI: str | None = None
+    IMS_OIDC_SCOPES: str | None = None
+    IMS_OIDC_GROUPS_CLAIM: str | None = None
+    IMS_OIDC_ADMIN_GROUPS: str | None = None
+    IMS_OIDC_MANAGER_GROUPS: str | None = None
+    IMS_OIDC_MEMBER_GROUPS: str | None = None
+    IMS_OIDC_ORG_ID: uuid.UUID | None = None
+
+    # Legacy names remain supported for existing deployments.
     OIDC_ENABLED: bool = False
     OIDC_ISSUER: str | None = None
     OIDC_CLIENT_ID: str | None = None
@@ -83,12 +98,53 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _guard_local_dev_auth(self) -> "Settings":
+        oidc_enabled = self.oidc_enabled
         if self.APP_ENV in ("staging", "production") and self.LOCAL_DEV_AUTH:
             raise ValueError(
                 "LOCAL_DEV_AUTH must be false when APP_ENV is staging or production"
             )
-        if self.APP_ENV in ("staging", "production") and not self.OIDC_ENABLED:
-            raise ValueError("OIDC_ENABLED must be true when APP_ENV is staging or production")
+        if self.APP_ENV in ("staging", "production") and not oidc_enabled:
+            raise ValueError("IMS_OIDC_ENABLED must be true when APP_ENV is staging or production")
+        if oidc_enabled:
+            issuer = self.oidc_issuer
+            redirect_uri = self.oidc_redirect_uri
+            missing = [
+                name
+                for name, value in (
+                    ("IMS_OIDC_ISSUER", issuer),
+                    ("IMS_OIDC_CLIENT_ID", self.oidc_client_id),
+                    ("IMS_OIDC_REDIRECT_URI", redirect_uri),
+                )
+                if not value or not value.strip()
+            ]
+            if missing:
+                raise ValueError(
+                    "OIDC is enabled but required configuration is missing: "
+                    + ", ".join(missing)
+                )
+            if issuer and redirect_uri:
+                try:
+                    issuer_url = urlsplit(issuer)
+                    redirect_url = urlsplit(redirect_uri)
+                except ValueError as exc:
+                    raise ValueError("IMS OIDC URLs are invalid") from exc
+                if (
+                    issuer_url.scheme not in ("http", "https")
+                    or not issuer_url.hostname
+                    or issuer_url.username is not None
+                    or issuer_url.password is not None
+                    or redirect_url.scheme not in ("http", "https")
+                    or not redirect_url.hostname
+                    or redirect_url.username is not None
+                    or redirect_url.password is not None
+                ):
+                    raise ValueError("IMS_OIDC_ISSUER and IMS_OIDC_REDIRECT_URI must be valid URLs")
+                if self.APP_ENV in ("staging", "production") and (
+                    issuer_url.scheme != "https" or redirect_url.scheme != "https"
+                ):
+                    raise ValueError(
+                        "IMS_OIDC_ISSUER and IMS_OIDC_REDIRECT_URI must use HTTPS outside local/dev"
+                    )
         if self.GITHUB_WEBHOOK_ENABLED and not (
             self.GITHUB_WEBHOOK_SECRET and self.GITHUB_WEBHOOK_SECRET.strip()
         ):
@@ -97,6 +153,46 @@ class Settings(BaseSettings):
             )
         return self
 
+    @property
+    def oidc_enabled(self) -> bool:
+        return self.IMS_OIDC_ENABLED or self.OIDC_ENABLED
+
+    @property
+    def oidc_issuer(self) -> str | None:
+        return self.IMS_OIDC_ISSUER or self.OIDC_ISSUER
+
+    @property
+    def oidc_client_id(self) -> str | None:
+        return self.IMS_OIDC_CLIENT_ID or self.OIDC_CLIENT_ID
+
+    @property
+    def oidc_client_secret(self) -> str | None:
+        if self.IMS_OIDC_CLIENT_SECRET is not None:
+            return self.IMS_OIDC_CLIENT_SECRET
+        return self.OIDC_CLIENT_SECRET
+
+    @property
+    def oidc_redirect_uri(self) -> str | None:
+        return self.IMS_OIDC_REDIRECT_URI or self.OIDC_REDIRECT_URI
+
+    @property
+    def oidc_scopes(self) -> str:
+        return self.IMS_OIDC_SCOPES or self.OIDC_SCOPES
+
+    @property
+    def oidc_groups_claim(self) -> str:
+        return self.IMS_OIDC_GROUPS_CLAIM or self.OIDC_GROUP_CLAIM
+
+    def oidc_groups_for_role(self, role: str) -> set[str]:
+        configured = getattr(self, f"IMS_OIDC_{role.upper()}_GROUPS")
+        legacy = getattr(self, f"OIDC_GROUP_TO_ROLE_{role.upper()}")
+        values = [value for value in (configured, legacy) if value]
+        return {
+            group.strip()
+            for value in values
+            for group in value.split(",")
+            if group.strip()
+        }
 
     @property
     def cors_origins(self) -> list[str]:
